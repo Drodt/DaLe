@@ -1,0 +1,24 @@
+\theory Prop {
+  \sorts {
+    \top Any;
+    \meta Formula; 
+  }
+
+  \operators {
+    \rigid true -> Formula;
+    \rigid false -> Formula;
+    \rigid not(Formula) -> Formula;
+    \rigid and(Formula, Formula) -> Formula;
+    \rigid or(Formula, Formula) -> Formula;
+    \rigid imp(Formula, Formula) -> Formula;
+    \rigid equiv(Formula, Formula) -> Formula;
+  }
+}
+
+\theory FOL {
+  \operators {
+    \rigid all<S>{0}(Formula) -> Formula;
+    \rigid exists<S>{0}(Formula) -> Formula;
+    \rigid var<S>(NUMBER) -> S;
+  }
+}

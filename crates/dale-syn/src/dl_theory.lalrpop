@@ -1,17 +1,32 @@
+use std::str::FromStr;
+
 use crate::theory::*;
 
 grammar;
+
+pub File: File = {
+    <theories:Theory*> => File { theories }
+}
 
 pub Theory: Theory = {
     "\\theory" <name:Ident> "{" <items:Item*> "}" => 
     Theory {name, items}
 };
 
-pub Ident: String = <s:r"[a-zA-Z][a-zA-Z0-9_\-]*"> => s.to_string();
+pub Ident: String = <s:r"[a-zA-Z][a-zA-Z0-9_]*"> => s.to_string();
 
 Item: Item = {
     "\\use" <UseTree> ";" => Item::Use(<>),
-    "\\sorts" "{" "}" => Item::Sorts(SortDecls {}),
+    <start: @L> "\\operators" "{" <ops:FunctionDecl*> "}" <end: @R> => Item::Operators(
+        OperatorDecls {
+            span: start..end,
+            node: ops
+        }
+    ),
+    <start: @L> "\\sorts" "{" <node:SortDecl*> "}" <end: @R> => Item::Sorts(SortDecls {
+        span: start..end,
+        node
+    }),
     "\\datatypes" "{" "}" => Item::DataTypes(DataTypeDecls {}),
     "\\functions" "{" "}" => Item::Functions(FunctionDecls {}),
     "\\predicates" "{" "}" => Item::Predicates(PredicateDecls {}),
@@ -70,3 +85,93 @@ Path: Path = {
         span: start..end, segments
     }
 } 
+
+FunctionDecl: FunctionDecl = {
+    <rigid:"\\rigid"?> <name:Ident> "->" <sort:Sort> ";" => FunctionDecl {
+        rigid: rigid.is_some(),
+        name,
+        params: vec![],
+        where_to_bind: vec![],
+        arg_sorts: vec![],
+        sort
+    },
+    <rigid:"\\rigid"?> <name:Ident> "(" <arg_sorts:Comma<Sort>> ")" "->" <sort:Sort> ";" => FunctionDecl {
+        rigid: rigid.is_some(),
+        name,
+        params: vec![],
+        where_to_bind: vec![],
+        arg_sorts,
+        sort
+    },
+    <rigid:"\\rigid"?> <name:Ident> <where_to_bind:WhereToBind> "(" <arg_sorts:Comma<Sort>> ")" "->" <sort:Sort> ";" => FunctionDecl {
+        rigid: rigid.is_some(),
+        name,
+        params: vec![],
+        where_to_bind,
+        arg_sorts,
+        sort
+    },
+    <rigid:"\\rigid"?> <name:Ident> "<" <params:Comma<Ident>> ">" "->" <sort:Sort> ";" => FunctionDecl {
+        rigid: rigid.is_some(),
+        name,
+        params,
+        where_to_bind: vec![],
+        arg_sorts: vec![],
+        sort
+    },
+    <rigid:"\\rigid"?> <name:Ident> "<" <params:Comma<Ident>> ">" "(" <arg_sorts:Comma<Sort>> ")" "->" <sort:Sort> ";" => FunctionDecl {
+        rigid: rigid.is_some(),
+        name,
+        params,
+        where_to_bind: vec![],
+        arg_sorts,
+        sort
+    },
+    <rigid:"\\rigid"?> <name:Ident> "<" <params:Comma<Ident>> ">" <where_to_bind:WhereToBind> "(" <arg_sorts:Comma<Sort>> ")" "->" <sort:Sort> ";" => FunctionDecl {
+        rigid: rigid.is_some(),
+        name,
+        params,
+        where_to_bind,
+        arg_sorts,
+        sort
+    }
+}
+
+WhereToBind: Vec<u8> = "{" <nums:Comma<NumU8>> "}" => nums;
+
+NumU8: u8 = <s:r"[0-9]+"> => u8::from_str(s).unwrap();
+
+Sort: Sort = {
+    <start: @L> <name:Ident> "<" <params:Comma<Sort>> ">" <end: @R> => Sort {
+        span: start..end,
+        kind: SortKind::Parametric(name, params)
+    },
+    <start: @L> <name:Ident> <end: @R> => Sort {
+        span: start..end,
+        kind: SortKind::Simple(name)
+    },
+}
+
+SortDecl: SortDecl = {
+    <start: @L> <modifiers:SortModifiers> <name:Ident> "<" <params:Comma<Ident>> ">" ";" <end: @R> =>
+    SortDecl {
+        modifiers,
+        name,
+        span: start..end,
+        params
+    },
+    <start: @L> <modifiers:SortModifiers> <name:Ident> ";" <end: @R> =>
+    SortDecl {
+        modifiers,
+        name,
+        span: start..end,
+        params: vec![]
+    }
+}
+
+SortModifiers: SortModifiers = {
+    <meta:"\\meta"?> <top:"\\top"?> => SortModifiers {
+        top: top.is_some(),
+        meta: meta.is_some()
+    }
+}
