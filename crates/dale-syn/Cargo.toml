@@ -1,0 +1,15 @@
+[package]
+name = "dale-syn"
+description = "Syntax for DaLe"
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+
+
+[dependencies]
+lalrpop-util = { version = "0.22.2", features = ["lexer", "unicode"] }
+
+[build-dependencies]
+lalrpop = "0.22.2"

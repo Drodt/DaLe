@@ -1,0 +1,72 @@
+use crate::theory::*;
+
+grammar;
+
+pub Theory: Theory = {
+    "\\theory" <name:Ident> "{" <items:Item*> "}" => 
+    Theory {name, items}
+};
+
+pub Ident: String = <s:r"[a-zA-Z][a-zA-Z0-9_\-]*"> => s.to_string();
+
+Item: Item = {
+    "\\use" <UseTree> ";" => Item::Use(<>),
+    "\\sorts" "{" "}" => Item::Sorts(SortDecls {}),
+    "\\datatypes" "{" "}" => Item::DataTypes(DataTypeDecls {}),
+    "\\functions" "{" "}" => Item::Functions(FunctionDecls {}),
+    "\\predicates" "{" "}" => Item::Predicates(PredicateDecls {}),
+    "\\axioms" "{" "}" => Item::Axioms(),
+}
+
+UseTree: UseTree = {
+    <start: @L> <prefix:Path> "::*" <end: @R> => UseTree {
+        prefix,
+        kind: UseTreeKind::Glob,
+        span: start..end
+    },
+    <start: @L> <prefix:Path> <end: @R> => UseTree {
+        prefix,
+        kind: UseTreeKind::Simple(None),
+        span: start..end
+    },
+    <start: @L> <prefix:Path> "as" <i:Ident> <end: @R> => UseTree {
+        prefix,
+        kind: UseTreeKind::Simple(Some(i)),
+        span: start..end
+    },
+    <start: @L> <prefix:Path> "::{" <inner_start: @L> <items:Comma<UseTree>> <inner_end: @R> "}" <end: @R> => UseTree {
+        prefix,
+        kind: UseTreeKind::Nested {items, span: inner_start..inner_end},
+        span: start..end
+    }
+}
+
+Separated<T, S>: Vec<T> = {
+    <mut v:(<T> <S>)*> <e:T> => {
+        v.into_iter().map(|e| e.0).extend_one(e).collect()
+    }
+}
+
+Comma<T>: Vec<T> = {
+    <mut v:(<T> ",")*> <e:T?> => match e {
+        None => v,
+        Some(e) => {
+            v.push(e);
+            v
+        }
+    }
+}
+
+DoubleColon<T>: Vec<T> = {
+    <mut v:(<T> "::")*> <e:T> => {
+        v.push(e);
+        v
+    }
+}
+
+Path: Path = {
+    <start: @L> <segments:DoubleColon<Ident>> <end: @R> => 
+    Path {
+        span: start..end, segments
+    }
+} 

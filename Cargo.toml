@@ -1,0 +1,10 @@
+[workspace]
+members = ["crates/dale-syn"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+authors = ["Daniel Drodt <daniel.drodt@tu-darmstadt.de>"]
+edition = "2024"
+license = "MIT"
+repository = ""
