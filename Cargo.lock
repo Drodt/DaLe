@@ -79,9 +79,14 @@ dependencies = [
 name = "dale-syn"
 version = "0.1.0"
 dependencies = [
+ "dale-util",
  "lalrpop",
  "lalrpop-util",
 ]
+
+[[package]]
+name = "dale-util"
+version = "0.1.0"
 
 [[package]]
 name = "digest"

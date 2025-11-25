@@ -1,8 +1,10 @@
 use std::str::FromStr;
 
-use crate::theory::*;
+use dale_util::symbol::Symbol;
 
-grammar;
+use crate::{theory::*, ParserCtx};
+
+grammar(ctx: &mut ParserCtx);
 
 pub File: File = {
     <theories:Theory*> => File { theories }
@@ -13,9 +15,9 @@ pub Theory: Theory = {
     Theory {name, items}
 };
 
-pub Ident: String = {
-    <s:r"[a-zA-Z][a-zA-Z0-9_]*"> => s.to_string(),
-    <s:r"_[a-zA-Z0-9]+"> => s.to_string()
+pub Ident: Spanned<Symbol> = {
+    <start: @L> <s:r"[a-zA-Z][a-zA-Z0-9_]*"> <end: @R> => Spanned::new(ctx.intern(s), start..end),
+    <start: @L> <s:r"_[a-zA-Z0-9]+"> <end: @R> => Spanned::new(ctx.intern(s), start..end),
 }
 
 Item: Item = {

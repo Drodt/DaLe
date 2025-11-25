@@ -1,10 +1,20 @@
 use std::ops::Range;
 
+use dale_util::symbol::Symbol;
+
 #[derive(Debug, Clone)]
 pub struct Spanned<T> {
     pub node: T,
     pub span: Span,
 }
+
+impl<T> Spanned<T> {
+    pub fn new(node: T, span: Span) -> Self {
+        Self { node, span }
+    }
+}
+
+type Ident = Spanned<Symbol>;
 
 #[derive(Debug, Clone)]
 pub struct File {
@@ -13,7 +23,7 @@ pub struct File {
 
 #[derive(Debug, Clone)]
 pub struct Theory {
-    pub name: String,
+    pub name: Ident,
     pub items: Vec<Item>,
 }
 
@@ -22,7 +32,7 @@ pub type Span = Range<usize>;
 #[derive(Debug, Clone)]
 pub struct Path {
     pub span: Span,
-    pub segments: Vec<String>,
+    pub segments: Vec<Ident>,
 }
 
 #[derive(Debug, Clone)]
@@ -45,7 +55,7 @@ pub struct UseTree {
 
 #[derive(Debug, Clone)]
 pub enum UseTreeKind {
-    Simple(Option<String>),
+    Simple(Option<Ident>),
     Nested { items: Vec<UseTree>, span: Span },
     Glob,
 }
@@ -55,7 +65,7 @@ pub type OperatorDecls = Spanned<Vec<FunctionDecl>>;
 #[derive(Debug, Clone)]
 pub struct FunctionDecl {
     pub modifiers: FunctionModifiers,
-    pub name: String,
+    pub name: Ident,
     pub params: Vec<GenericParam>,
     pub where_to_bind: Vec<u8>,
     pub arg_sorts: Vec<Sort>,
@@ -75,7 +85,7 @@ pub type SortDecls = Spanned<Vec<SortDecl>>;
 pub struct SortDecl {
     pub modifiers: SortModifiers,
     pub span: Span,
-    pub name: String,
+    pub name: Ident,
     pub params: Vec<GenericParam>,
     pub extends: Option<(Span, Vec<Sort>)>,
 }
@@ -96,7 +106,7 @@ pub type PredicateDecls = Spanned<Vec<PredicateDecl>>;
 #[derive(Debug, Clone)]
 pub struct PredicateDecl {
     pub rigid: bool,
-    pub name: String,
+    pub name: Ident,
     pub params: Vec<GenericParam>,
     pub where_to_bind: Vec<u8>,
     pub arg_sorts: Vec<Sort>,
@@ -110,8 +120,8 @@ pub struct Sort {
 
 #[derive(Debug, Clone)]
 pub enum SortKind {
-    Simple(String),
-    Parametric(String, Vec<GenericArg>),
+    Simple(Ident),
+    Parametric(Ident, Vec<GenericArg>),
 }
 
 #[derive(Debug, Clone)]
@@ -122,7 +132,7 @@ pub enum GenericArg {
 
 #[derive(Debug, Clone)]
 pub struct GenericParam {
-    pub name: String,
+    pub name: Ident,
     pub kind: GenericParamKind,
     pub colon_span: Option<Span>,
 }

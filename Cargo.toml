@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/dale-syn"]
+members = ["crates/dale-syn", "crates/dale-util"]
 resolver = "3"
 
 [workspace.package]
@@ -8,3 +8,7 @@ authors = ["Daniel Drodt <daniel.drodt@tu-darmstadt.de>"]
 edition = "2024"
 license = "MIT"
 repository = ""
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
