@@ -54,12 +54,19 @@ pub type OperatorDecls = Spanned<Vec<FunctionDecl>>;
 
 #[derive(Debug, Clone)]
 pub struct FunctionDecl {
-    pub rigid: bool,
+    pub modifiers: FunctionModifiers,
     pub name: String,
-    pub params: Vec<String>,
+    pub params: Vec<GenericParam>,
     pub where_to_bind: Vec<u8>,
     pub arg_sorts: Vec<Sort>,
     pub sort: Sort,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FunctionModifiers {
+    pub rigid: bool,
+    pub unique: bool,
+    pub skolem: bool,
 }
 
 pub type SortDecls = Spanned<Vec<SortDecl>>;
@@ -69,10 +76,11 @@ pub struct SortDecl {
     pub modifiers: SortModifiers,
     pub span: Span,
     pub name: String,
-    pub params: Vec<String>,
+    pub params: Vec<GenericParam>,
+    pub extends: Option<(Span, Vec<Sort>)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct SortModifiers {
     pub meta: bool,
     pub top: bool,
@@ -81,11 +89,18 @@ pub struct SortModifiers {
 #[derive(Debug, Clone)]
 pub struct DataTypeDecls {}
 
-#[derive(Debug, Clone)]
-pub struct FunctionDecls {}
+pub type FunctionDecls = Spanned<Vec<FunctionDecl>>;
+
+pub type PredicateDecls = Spanned<Vec<PredicateDecl>>;
 
 #[derive(Debug, Clone)]
-pub struct PredicateDecls {}
+pub struct PredicateDecl {
+    pub rigid: bool,
+    pub name: String,
+    pub params: Vec<GenericParam>,
+    pub where_to_bind: Vec<u8>,
+    pub arg_sorts: Vec<Sort>,
+}
 
 #[derive(Debug, Clone)]
 pub struct Sort {
@@ -96,5 +111,35 @@ pub struct Sort {
 #[derive(Debug, Clone)]
 pub enum SortKind {
     Simple(String),
-    Parametric(String, Vec<Sort>),
+    Parametric(String, Vec<GenericArg>),
+}
+
+#[derive(Debug, Clone)]
+pub enum GenericArg {
+    Sort(Sort),
+    Const(Term, Span),
+}
+
+#[derive(Debug, Clone)]
+pub struct GenericParam {
+    pub name: String,
+    pub kind: GenericParamKind,
+    pub colon_span: Option<Span>,
+}
+
+#[derive(Debug, Clone)]
+pub enum GenericParamKind {
+    Sort,
+    Const { sort: Sort, span: Span },
+}
+
+#[derive(Debug, Clone)]
+pub struct Term {
+    pub span: Span,
+    pub kind: TermKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum TermKind {
+    Path(Path),
 }

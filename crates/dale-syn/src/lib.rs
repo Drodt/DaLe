@@ -34,6 +34,6 @@ mod tests {
 
         let rusty = dl_theory::FileParser::new().parse(&input).unwrap();
 
-        assert_eq!(2, rusty.theories.len())
+        assert_eq!(6, rusty.theories.len())
     }
 }
