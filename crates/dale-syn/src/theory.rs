@@ -1,6 +1,14 @@
 use std::ops::Range;
 
+use dale_macros::newtype_index;
 use dale_util::symbol::Symbol;
+
+newtype_index! {
+    /// Identifies an AST node.
+    #[orderable]
+    #[debug_format = "NodeId({})"]
+    pub struct NodeId {}
+}
 
 #[derive(Debug, Clone)]
 pub struct Spanned<T> {
@@ -14,15 +22,17 @@ impl<T> Spanned<T> {
     }
 }
 
-type Ident = Spanned<Symbol>;
+pub type Ident = Spanned<Symbol>;
 
 #[derive(Debug, Clone)]
 pub struct File {
+    pub id: NodeId,
     pub theories: Vec<Theory>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Theory {
+    pub id: NodeId,
     pub name: Ident,
     pub items: Vec<Item>,
 }
@@ -36,7 +46,14 @@ pub struct Path {
 }
 
 #[derive(Debug, Clone)]
-pub enum Item {
+pub struct Item {
+    pub id: NodeId,
+    pub kind: ItemKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum ItemKind {
     Use(UseTree),
     Operators(OperatorDecls),
     Sorts(SortDecls),
@@ -44,6 +61,7 @@ pub enum Item {
     Functions(FunctionDecls),
     Predicates(PredicateDecls),
     Axioms(),
+    Rules(Rules),
 }
 
 #[derive(Debug, Clone)]
@@ -60,10 +78,11 @@ pub enum UseTreeKind {
     Glob,
 }
 
-pub type OperatorDecls = Spanned<Vec<FunctionDecl>>;
+pub type OperatorDecls = Vec<FunctionDecl>;
 
 #[derive(Debug, Clone)]
 pub struct FunctionDecl {
+    pub id: NodeId,
     pub modifiers: FunctionModifiers,
     pub name: Ident,
     pub params: Vec<GenericParam>,
@@ -79,10 +98,11 @@ pub struct FunctionModifiers {
     pub skolem: bool,
 }
 
-pub type SortDecls = Spanned<Vec<SortDecl>>;
+pub type SortDecls = Vec<SortDecl>;
 
 #[derive(Debug, Clone)]
 pub struct SortDecl {
+    pub id: NodeId,
     pub modifiers: SortModifiers,
     pub span: Span,
     pub name: Ident,
@@ -99,12 +119,13 @@ pub struct SortModifiers {
 #[derive(Debug, Clone)]
 pub struct DataTypeDecls {}
 
-pub type FunctionDecls = Spanned<Vec<FunctionDecl>>;
+pub type FunctionDecls = Vec<FunctionDecl>;
 
-pub type PredicateDecls = Spanned<Vec<PredicateDecl>>;
+pub type PredicateDecls = Vec<PredicateDecl>;
 
 #[derive(Debug, Clone)]
 pub struct PredicateDecl {
+    pub id: NodeId,
     pub rigid: bool,
     pub name: Ident,
     pub params: Vec<GenericParam>,
@@ -114,6 +135,7 @@ pub struct PredicateDecl {
 
 #[derive(Debug, Clone)]
 pub struct Sort {
+    pub id: NodeId,
     pub span: Span,
     pub kind: SortKind,
 }
@@ -145,6 +167,7 @@ pub enum GenericParamKind {
 
 #[derive(Debug, Clone)]
 pub struct Term {
+    pub id: NodeId,
     pub span: Span,
     pub kind: TermKind,
 }
@@ -152,4 +175,55 @@ pub struct Term {
 #[derive(Debug, Clone)]
 pub enum TermKind {
     Path(Path),
+    Call(Path, Vec<Term>),
+}
+
+type Rules = Vec<Rule>;
+
+#[derive(Debug, Clone)]
+pub struct Rule {
+    pub id: NodeId,
+    pub name: Ident,
+    pub schema_vars: Vec<SchemaVarDecl>,
+    pub assumes: Option<Spanned<TermOrSeq>>,
+    pub find: Option<Spanned<TermOrSeq>>,
+    pub goal_specs: GoalSpecs,
+    pub rule_sets: Option<Spanned<Vec<Ident>>>,
+    pub display_name: Option<Spanned<String>>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct SchemaVarDecl {
+    pub id: NodeId,
+    pub span: Span,
+    pub name: Ident,
+    pub sort: Sort,
+}
+
+#[derive(Debug, Clone)]
+pub enum TermOrSeq {
+    Term(Term),
+    Seq(Seq),
+}
+
+#[derive(Debug, Clone)]
+pub struct Seq {
+    pub id: NodeId,
+    pub ante: Vec<Term>,
+    pub succ: Vec<Term>,
+}
+
+#[derive(Debug, Clone)]
+pub enum GoalSpecs {
+    CloseGoal(NodeId, Span),
+    Specs(Vec<GoalSpec>, Span),
+}
+
+#[derive(Debug, Clone)]
+pub struct GoalSpec {
+    pub id: NodeId,
+    pub name: Option<(String, Span)>,
+    pub replace_with: Option<TermOrSeq>,
+    pub add: Option<TermOrSeq>,
 }

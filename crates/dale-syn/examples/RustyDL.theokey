@@ -13,6 +13,286 @@
     \rigid imp(Formula, Formula) -> Formula;
     \rigid equiv(Formula, Formula) -> Formula;
   }
+
+  \rules {
+    close {
+      \schemaVar b: Formula;
+      \assumes(b ==>)
+      \find(==> b)
+      \closegoal
+      \rulesets(closure)
+      \displayname "close"
+    }
+
+    closeAntec {
+      \assumes( ==> b)
+      \find(b ==>)
+      \closegoal
+      \displayname "close"
+    }
+
+    closeFalse {
+      \find(false ==>)
+      \closegoal
+      \rulesets(closure)
+    }
+
+    closeTrue {
+      \find( ==> true)
+      \closegoal 
+      \rulesets(closure)
+    }
+
+    replace_known_left {
+      \assumes(b ==>)
+      \find(b)
+      \replacewith(true)
+      \rulesets(replace_known_left)
+    }
+
+    replace_known_right {
+      \assumes( ==> b)
+      \find(b)
+      \replacewith(false)
+      \rulesets(replace_known_right)
+    }
+
+    true_left {
+      \find(true ==>)
+      \replacewith( ==>)
+      \rulesets(concrete)
+    }
+
+    false_right {
+      \find( ==> false)
+      \replacewith( ==>)
+      \rulesets(concrete)
+    }
+    
+    notLeft {
+      \find(not(b) ==>)
+      \replacewith( ==> b)
+      \rulesets(alpha)
+    }
+
+    notRight {
+      \find( ==> not(b))
+      \replacewith(b ==>)
+      \rulesets(alpha)
+    }
+
+    impLeft {
+      \find(imp(b, c) ==>)
+      \replacewith(==> b);
+      \replacewith(c ==>)
+      \rulesets(beta)
+    }
+
+    doubleImpLeft {
+      \find(imp(imp(b, c), d) ==>)
+      \replacewith( ==> b);
+      \replacewith( ==> c);
+      \replacewith(d ==>)
+      \rulesets(beta)
+    }
+
+    impRight {
+      \find( ==> imp(b, c))
+      \replacewith(b ==> c)
+      \rulesets(alpha)
+    }
+
+    andLeft {
+      \find(and(b, c) ==>)
+      \replacewith(b, c ==>) \rulesets(alpha)
+    }
+    andRight {
+      \find( ==> and(b, c))
+      \replacewith( ==> b);
+      \replacewith( ==> c)
+      \rulesets(beta)
+    }
+    orLeft {
+      \find(or(b, c) ==>)
+      "#b":
+        \replacewith(b ==>);
+      "#c":
+        \replacewith(c ==>)
+      \rulesets(beta)
+    }
+    orRight {
+      \find( ==> or(b, c))
+      \replacewith( ==> b, c) \rulesets(alpha)
+    }
+
+    equiv_left {
+      \find(equiv(b, c) ==>)
+      \replacewith(b, c ==>);
+      \replacewith( ==> b, c)
+      \rulesets(beta)
+    }
+
+    equiv_right {
+      \find( ==> equiv(b, c))
+      "Case '->'":
+        \replacewith(b ==> c);
+      "Case '<-'":
+        \replacewith(c ==> b)
+      \rulesets(beta)
+    }
+
+    split_or_strong {
+      \find(or(b, c) ==>)
+      \replacewith(b ==>);
+      \replacewith(c ==> b)
+    }
+    rotate_and {
+      \find(and(b, and(c, d)))
+      \replacewith(and(c, and(b, d)))
+    }
+    rotate_or {
+      \find(or(b, or(c, d)))
+      \replacewith(or(c, or(b, d)))
+    }
+
+    double_not {
+      \find(not(not(b)))
+      \replacewith(b)
+      \rulesets(concrete)
+    }
+
+    concrete_not_1 {
+      \find(not(true))
+      \replacewith(false)
+      \rulesets(concrete)
+    }
+    concrete_not_2 {
+      \find(not(false))
+      \replacewith(true) 
+      \rulesets(concrete)
+    }
+
+    concrete_impl_1 {
+      \find(impl(true, b))
+      \replacewith(b)
+      \rulesets(concrete)
+    }
+    concrete_impl_2 {
+      \find(impl(false, b))
+      \replacewith(true)
+      \rulesets(concrete)
+    }
+    concrete_impl_3 {
+      \find(impl(b, false))
+      \replacewith(not(b))
+      \rulesets(concrete)
+    }
+    concrete_impl_4 {
+      \find(impl(b, true))
+      \replacewith(true)
+      \rulesets(concrete)
+    }
+
+    concrete_and_1 {
+      \find(and(true, b))
+      \replacewith(b)
+      \rulesets(concrete)
+    }
+    concrete_and_2 {
+      \find(and(false, b))
+      \replacewith(false)
+      \rulesets(concrete)
+    }
+    concrete_and_3 {
+      \find(and(b, true))
+      \replacewith(b)
+      \rulesets(concrete)
+    }
+    concrete_and_4 {
+      \find(and(b, false))
+      \replacewith(false)
+      \rulesets(concrete)
+    }
+
+    concrete_or_1 {
+      \find(or(true, b))
+      \replacewith(true)
+      \rulesets(concrete)
+    }
+    concrete_or_2 {
+      \find(or(false, b))
+      \replacewith(b)
+      \rulesets(concrete)
+    }
+    concrete_or_3 {
+      \find(or(b, true))
+      \replacewith(true)
+      \rulesets(concrete)
+    }
+    concrete_or_4 {
+      \find(or(b, false))
+      \replacewith(b) 
+      \rulesets(concrete)
+    }
+
+    concrete_or_5 {
+      \find(or(and(c, b), and(c, not(b))))
+      \replacewith(c)
+      \rulesets(concrete)
+      \displayname "distr_elim"
+    }
+
+    concrete_eq_1 {
+      \find(equiv(true, b))
+      \replacewith(b)
+      \rulesets(concrete)
+    }
+    concrete_eq_2 {
+      \find(equiv(false, b))
+      \replacewith(not(b))
+      \rulesets(concrete)
+    }
+    concrete_eq_3 {
+      \find(equiv(b, true))
+      \replacewith(b) 
+      \rulesets(concrete)
+    }
+    concrete_eq_4 {
+      \find(equiv(b, false))
+      \replacewith(not(b))
+      \rulesets(concrete)
+    }
+
+    cut {
+      "CUT: #cutFormula TRUE":
+        \add(cutFormula ==>);
+      "CUT: #cutFormula FALSE":
+        \add( ==> cutFormula)
+      \rulesets(cut)
+    }
+
+    cut_direct {
+      \find(cutFormula)
+      "CUT: #cutFormula TRUE":
+        \replacewith(true)
+        \add(cutFormula ==>);
+      "CUT: #cutFormula FALSE":
+        \replacewith(false)
+        \add( ==> cutFormula)
+      \rulesets(cut_direct)
+    }
+
+    cut_direct_r {
+      \find( ==> b)
+      \replacewith( ==> b);
+      \add(b ==>)
+    }
+    cut_direct_l {
+      \find(b ==>)
+      \replacewith(b ==>);
+      \add( ==> b)
+    }
+  }
 }
 
 \theory FOL {

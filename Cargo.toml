@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/dale-syn", "crates/dale-util"]
+members = ["crates/dale-index","crates/dale-macros","crates/dale-syn", "crates/dale-util"]
 resolver = "3"
 
 [workspace.package]

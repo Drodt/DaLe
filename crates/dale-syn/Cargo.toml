@@ -11,6 +11,8 @@ license = { workspace = true }
 [dependencies]
 lalrpop-util = { version = "0.22.2", features = ["lexer", "unicode"] }
 dale-util = { path = "../dale-util" }
+dale-macros = { path = "../dale-macros" }
+dale-index = { path = "../dale-index" }
 
 [build-dependencies]
 lalrpop = "0.22.2"

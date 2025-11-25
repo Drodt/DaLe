@@ -7,12 +7,12 @@ use crate::{theory::*, ParserCtx};
 grammar(ctx: &mut ParserCtx);
 
 pub File: File = {
-    <theories:Theory*> => File { theories }
+    <theories:Theory*> => File { id: ctx.id(), theories }
 }
 
 pub Theory: Theory = {
     "\\theory" <name:Ident> "{" <items:Item*> "}" => 
-    Theory {name, items}
+    Theory {id: ctx.id(), name, items}
 };
 
 pub Ident: Spanned<Symbol> = {
@@ -20,28 +20,17 @@ pub Ident: Spanned<Symbol> = {
     <start: @L> <s:r"_[a-zA-Z0-9]+"> <end: @R> => Spanned::new(ctx.intern(s), start..end),
 }
 
-Item: Item = {
-    "\\use" <UseTree> ";" => Item::Use(<>),
-    <start: @L> "\\operators" "{" <ops:FunctionDecl*> "}" <end: @R> => Item::Operators(
-        OperatorDecls {
-            span: start..end,
-            node: ops
-        }
-    ),
-    <start: @L> "\\sorts" "{" <node:SortDecl*> "}" <end: @R> => Item::Sorts(SortDecls {
-        span: start..end,
-        node
-    }),
-    "\\datatypes" "{" "}" => Item::DataTypes(DataTypeDecls {}),
-    <start: @L> "\\functions" "{" <node:FunctionDecl*> "}" <end: @R> => Item::Functions(FunctionDecls {
-        node,
-        span: start..end
-    }),
-    <start: @L> "\\predicates" "{" <node:PredicateDecl*> "}" <end: @R> => Item::Predicates(PredicateDecls {
-        node,
-        span: start..end
-    }),
-    "\\axioms" "{" "}" => Item::Axioms(),
+Item: Item = <start: @L> <k:ItemKind> <end: @R> => Item {id: ctx.id(), span: start..end, kind: k};
+
+ItemKind: ItemKind = {
+    "\\use" <UseTree> ";" => ItemKind::Use(<>),
+    "\\operators" "{" <ops:FunctionDecl*> "}" => ItemKind::Operators(ops),
+    "\\sorts" "{" <node:SortDecl*> "}" => ItemKind::Sorts(node),
+    "\\datatypes" "{" "}" => ItemKind::DataTypes(DataTypeDecls {}),
+    "\\functions" "{" <node:FunctionDecl*> "}" => ItemKind::Functions(node),
+    "\\predicates" "{" <node:PredicateDecl*> "}" => ItemKind::Predicates(node),
+    "\\axioms" "{" "}" => ItemKind::Axioms(),
+    "\\rules" "{" <rules:Rule*> "}" => ItemKind::Rules(rules)
 }
 
 UseTree: UseTree = {
@@ -83,6 +72,13 @@ Comma<T>: Vec<T> = {
     }
 }
 
+Semi<T>: Vec<T> = {
+    <mut v:(<T> ";")*> <e:T> => {
+        v.push(e);
+        v
+    }
+}
+
 DoubleColon<T>: Vec<T> = {
     <mut v:(<T> "::")*> <e:T> => {
         v.push(e);
@@ -99,6 +95,7 @@ Path: Path = {
 
 FunctionDecl: FunctionDecl = {
     <modifiers:FunctionModifiers> <name:Ident> "->" <sort:Sort> ";" => FunctionDecl {
+        id: ctx.id(),
         modifiers,
         name,
         params: vec![],
@@ -107,6 +104,7 @@ FunctionDecl: FunctionDecl = {
         sort
     },
     <modifiers:FunctionModifiers> <name:Ident> "(" <arg_sorts:Comma<Sort>> ")" "->" <sort:Sort> ";" => FunctionDecl {
+        id: ctx.id(),
         modifiers,
         name,
         params: vec![],
@@ -115,6 +113,7 @@ FunctionDecl: FunctionDecl = {
         sort
     },
     <modifiers:FunctionModifiers> <name:Ident> <where_to_bind:WhereToBind> "(" <arg_sorts:Comma<Sort>> ")" "->" <sort:Sort> ";" => FunctionDecl {
+        id: ctx.id(),
         modifiers,
         name,
         params: vec![],
@@ -123,6 +122,7 @@ FunctionDecl: FunctionDecl = {
         sort
     },
     <modifiers:FunctionModifiers> <name:Ident> "<" <params:Comma<GenericParam>> ">" "->" <sort:Sort> ";" => FunctionDecl {
+        id: ctx.id(),
         modifiers,
         name,
         params,
@@ -131,6 +131,7 @@ FunctionDecl: FunctionDecl = {
         sort
     },
     <modifiers:FunctionModifiers> <name:Ident> "<" <params:Comma<GenericParam>> ">" "(" <arg_sorts:Comma<Sort>> ")" "->" <sort:Sort> ";" => FunctionDecl {
+        id: ctx.id(),
         modifiers,
         name,
         params,
@@ -139,6 +140,7 @@ FunctionDecl: FunctionDecl = {
         sort
     },
     <modifiers:FunctionModifiers> <name:Ident> "<" <params:Comma<GenericParam>> ">" <where_to_bind:WhereToBind> "(" <arg_sorts:Comma<Sort>> ")" "->" <sort:Sort> ";" => FunctionDecl {
+        id: ctx.id(),
         modifiers,
         name,
         params,
@@ -158,6 +160,7 @@ FunctionModifiers: FunctionModifiers = {
 
 PredicateDecl: PredicateDecl = {
     <rigid:"\\rigid"?> <name:Ident> ";" => PredicateDecl {
+        id: ctx.id(),
         rigid: rigid.is_some(),
         name,
         params: vec![],
@@ -165,6 +168,7 @@ PredicateDecl: PredicateDecl = {
         arg_sorts: vec![]
     },
     <rigid:"\\rigid"?> <name:Ident> "(" <arg_sorts:Comma<Sort>> ")" ";" => PredicateDecl {
+        id: ctx.id(),
         rigid: rigid.is_some(),
         name,
         params: vec![],
@@ -172,6 +176,7 @@ PredicateDecl: PredicateDecl = {
         arg_sorts
     },
     <rigid:"\\rigid"?> <name:Ident> <where_to_bind:WhereToBind> "(" <arg_sorts:Comma<Sort>> ")" ";" => PredicateDecl {
+        id: ctx.id(),
         rigid: rigid.is_some(),
         name,
         params: vec![],
@@ -179,6 +184,7 @@ PredicateDecl: PredicateDecl = {
         arg_sorts,
     },
     <rigid:"\\rigid"?> <name:Ident> "<" <params:Comma<GenericParam>> ">" ";" => PredicateDecl {
+        id: ctx.id(),
         rigid: rigid.is_some(),
         name,
         params,
@@ -186,6 +192,7 @@ PredicateDecl: PredicateDecl = {
         arg_sorts: vec![],
     },
     <rigid:"\\rigid"?> <name:Ident> "<" <params:Comma<GenericParam>> ">" "(" <arg_sorts:Comma<Sort>> ")" ";" => PredicateDecl {
+        id: ctx.id(),
         rigid: rigid.is_some(),
         name,
         params,
@@ -193,6 +200,7 @@ PredicateDecl: PredicateDecl = {
         arg_sorts
     },
     <rigid:"\\rigid"?> <name:Ident> "<" <params:Comma<GenericParam>> ">" <where_to_bind:WhereToBind> "(" <arg_sorts:Comma<Sort>> ")" ";" => PredicateDecl {
+        id: ctx.id(),
         rigid: rigid.is_some(),
         name,
         params,
@@ -207,10 +215,12 @@ NumU8: u8 = <s:r"[0-9]+"> => u8::from_str(s).unwrap();
 
 Sort: Sort = {
     <start: @L> <name:Ident> "<" <args:Comma<GenericArg>> ">" <end: @R> => Sort {
+        id: ctx.id(),
         span: start..end,
         kind: SortKind::Parametric(name, args)
     },
     <start: @L> <name:Ident> <end: @R> => Sort {
+        id: ctx.id(),
         span: start..end,
         kind: SortKind::Simple(name)
     },
@@ -219,6 +229,7 @@ Sort: Sort = {
 SortDecl: SortDecl = {
     <start: @L> <modifiers:SortModifiers> <name:Ident> "<" <params:Comma<GenericParam>> ">" ";" <end: @R> =>
     SortDecl {
+        id: ctx.id(),
         modifiers,
         name,
         span: start..end,
@@ -227,6 +238,7 @@ SortDecl: SortDecl = {
     },
     <start: @L> <modifiers:SortModifiers> <name:Ident> ";" <end: @R> =>
     SortDecl {
+        id: ctx.id(),
         modifiers,
         name,
         span: start..end,
@@ -264,8 +276,95 @@ GenericArg: GenericArg = {
 }
 
 Term: Term = {
+    <start: @L> <p:Path> "(" <args:Comma<Term>> ")" <end: @R> => Term {
+        id: ctx.id(),
+        span: start..end,
+        kind: TermKind::Call(p, args)
+    },
     <start: @L> <p:Path> <end: @R> => Term {
+        id: ctx.id(),
         span: start..end,
         kind: TermKind::Path(p)
     }
 }
+
+Rule: Rule = {
+    <start: @L> <name:Ident> "{" 
+        <schema_vars:SchemaVarDecl*> 
+        <assumes:Assumes?>
+        <find:Find?>
+        <goal_specs:GoalSpecs>
+        <rule_sets:RuleRuleSets?>
+        <display_name:DisplayName?>
+    "}" <end: @R> => Rule {
+        id: ctx.id(),
+        name,
+        schema_vars,
+        assumes,
+        find,
+        goal_specs,
+        rule_sets,
+        display_name,
+        span: start..end
+    }
+}
+
+SchemaVarDecl: SchemaVarDecl = {
+    <start: @L> "\\schemaVar" <name:Ident> ":" <sort:Sort> ";" <end: @R> => SchemaVarDecl {
+        id: ctx.id(),
+        span: start..end,
+        name,
+        sort
+    }
+}
+
+Assumes: Spanned<TermOrSeq> = {
+    <start: @L> "\\assumes" "(" <tos:TermOrSeq> ")" <end:@R> => Spanned::new(tos, start..end)
+}
+
+Find: Spanned<TermOrSeq> = {
+    <start: @L> "\\find" "(" <tos:TermOrSeq> ")" <end:@R> => Spanned::new(tos, start..end)
+}
+
+GoalSpecs: GoalSpecs = {
+    <start: @L> "\\closegoal" <end:@R> => GoalSpecs::CloseGoal(ctx.id(), start..end),
+    <start: @L> <specs:Semi<GoalSpec>> <end: @R> => GoalSpecs::Specs(specs, start..end)
+}
+
+GoalSpec: GoalSpec = {
+    <name:GoalSpecName?> "\\replacewith" "(" <t:TermOrSeq> ")" => GoalSpec {
+        id: ctx.id(),
+        name,
+        replace_with: Some(t),
+        add: None
+    },
+    <name:GoalSpecName?> "\\replacewith" "(" <r:TermOrSeq> ")" "\\add" "(" <a:TermOrSeq> ")" => GoalSpec {
+        id: ctx.id(),
+        name,
+        replace_with: Some(r),
+        add: Some(a)
+    },
+    <name:GoalSpecName?> "\\add" "(" <a:TermOrSeq> ")" => GoalSpec {
+        id: ctx.id(),
+        name,
+        replace_with: None,
+        add: Some(a)
+    }
+}
+
+GoalSpecName: (String, Span) = {
+    <start: @L> <s:StringValue> ":" <end: @R> => (s, start..end)
+}
+
+CloseGoal: Span = <start: @L> "\\closegoal" <end: @R> => start..end;
+
+RuleRuleSets: Spanned<Vec<Ident>> = <start: @L> "\\rulesets" "(" <rs:Comma<Ident>> ")" <end: @R> => Spanned::new(rs, start..end);
+
+DisplayName: Spanned<String> = <start: @L> "\\displayname" <l:StringValue> <end: @R> => Spanned::new(l, start..end);
+
+TermOrSeq: TermOrSeq = {
+    <ante:Comma<Term>> "==>" <succ:Comma<Term>> => TermOrSeq::Seq(Seq { id: ctx.id(), ante, succ }),
+    <t:Term> => TermOrSeq::Term(t)
+}
+
+StringValue: String = <l:r#""[^\n"]+""#> => l[1..l.len() - 1].into();
