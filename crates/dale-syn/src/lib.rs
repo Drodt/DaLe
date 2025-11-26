@@ -3,9 +3,10 @@ use lalrpop_util::{ParseError, lalrpop_mod};
 use dale_index::Idx;
 use dale_util::symbol::{Interner, Symbol};
 
-use crate::{dl_theory::Token, theory::NodeId};
+use crate::{dl_theory::Token, raw_theory::NodeId};
 
-pub mod theory;
+pub mod ast;
+mod raw_theory;
 
 pub struct ParserCtx {
     next_id: NodeId,
