@@ -1,3 +1,4 @@
+use dale_index::Idx;
 use dale_macros::newtype_index;
 use dale_util::symbol::Symbol;
 
@@ -9,6 +10,8 @@ newtype_index! {
   pub struct FileId {}
 }
 
+pub const LOCAL_FILE: FileId = FileId::ZERO;
+
 newtype_index! {
   #[orderable]
   #[debug_format = "IrId({})"]
@@ -19,6 +22,49 @@ newtype_index! {
 pub struct DefId {
     pub index: DefIndex,
     pub file: FileId,
+}
+
+/// A `LocalDefId` is equivalent to a `DefId` with `file == LOCAL_FILE`. Since
+/// we encode this information in the type, we can ensure at compile time that
+/// no `DefId`s from upstream files get thrown into the mix. There are quite a
+/// few cases where we know that only `DefId`s from the local file are expected;
+/// a `DefId` from a different file would signify a bug somewhere. This
+/// is when `LocalDefId` comes in handy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LocalDefId {
+    pub local_def_index: DefIndex,
+}
+
+pub const FILE_DEF_ID: LocalDefId = LocalDefId {
+    local_def_index: FILE_DEF_INDEX,
+};
+
+impl Idx for LocalDefId {
+    #[inline]
+    fn new(idx: usize) -> Self {
+        LocalDefId {
+            local_def_index: Idx::new(idx),
+        }
+    }
+    #[inline]
+    fn index(self) -> usize {
+        self.local_def_index.index()
+    }
+}
+
+impl LocalDefId {
+    #[inline]
+    pub fn to_def_id(self) -> DefId {
+        DefId {
+            file: LOCAL_FILE,
+            index: self.local_def_index,
+        }
+    }
+
+    #[inline]
+    pub fn is_top_level(self) -> bool {
+        self == FILE_DEF_ID
+    }
 }
 
 newtype_index! {
@@ -266,9 +312,8 @@ pub struct GoalSpec<'ir> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Res<Id = IrId> {
+pub enum Res {
     Def(DefKind, DefId),
-    Local(Id),
     Err,
 }
 
@@ -283,4 +328,8 @@ pub enum DefKind {
     Pred,
     Fn,
     Rule,
+    SortParam,
+    ConstParam,
+    SchemaVar,
+    RuleSet,
 }

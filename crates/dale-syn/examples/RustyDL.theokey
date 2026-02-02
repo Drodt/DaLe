@@ -14,6 +14,17 @@
     \rigid equiv(Formula, Formula) -> Formula;
   }
 
+  \rulesets {
+    closure;
+    replace_known_left;
+    replace_known_right;
+    concrete;
+    alpha;
+    beta;
+    cut;
+    cut_direct;
+  }
+
   \rules {
     close {
       \schemaVar b: Formula;
@@ -45,6 +56,7 @@
     }
 
     replace_known_left {
+      \schemaVar b: Formula;
       \assumes(b ==>)
       \find(b)
       \replacewith(true)
@@ -52,6 +64,7 @@
     }
 
     replace_known_right {
+      \schemaVar b: Formula;
       \assumes( ==> b)
       \find(b)
       \replacewith(false)
@@ -71,18 +84,22 @@
     }
     
     notLeft {
+      \schemaVar b: Formula;
       \find(not(b) ==>)
       \replacewith( ==> b)
       \rulesets(alpha)
     }
 
     notRight {
+      \schemaVar b: Formula;
       \find( ==> not(b))
       \replacewith(b ==>)
       \rulesets(alpha)
     }
 
     impLeft {
+      \schemaVar b: Formula;
+      \schemaVar c: Formula;
       \find(imp(b, c) ==>)
       \replacewith(==> b);
       \replacewith(c ==>)
@@ -90,6 +107,9 @@
     }
 
     doubleImpLeft {
+      \schemaVar b: Formula;
+      \schemaVar c: Formula;
+      \schemaVar d: Formula;
       \find(imp(imp(b, c), d) ==>)
       \replacewith( ==> b);
       \replacewith( ==> c);
@@ -98,22 +118,30 @@
     }
 
     impRight {
+      \schemaVar b: Formula;
+      \schemaVar c: Formula;
       \find( ==> imp(b, c))
       \replacewith(b ==> c)
       \rulesets(alpha)
     }
 
     andLeft {
+      \schemaVar b: Formula;
+      \schemaVar c: Formula;
       \find(and(b, c) ==>)
       \replacewith(b, c ==>) \rulesets(alpha)
     }
     andRight {
+      \schemaVar b: Formula;
+      \schemaVar c: Formula;
       \find( ==> and(b, c))
       \replacewith( ==> b);
       \replacewith( ==> c)
       \rulesets(beta)
     }
     orLeft {
+      \schemaVar b: Formula;
+      \schemaVar c: Formula;
       \find(or(b, c) ==>)
       "#b":
         \replacewith(b ==>);
@@ -122,11 +150,15 @@
       \rulesets(beta)
     }
     orRight {
+      \schemaVar b: Formula;
+      \schemaVar c: Formula;
       \find( ==> or(b, c))
       \replacewith( ==> b, c) \rulesets(alpha)
     }
 
     equiv_left {
+      \schemaVar b: Formula;
+      \schemaVar c: Formula;
       \find(equiv(b, c) ==>)
       \replacewith(b, c ==>);
       \replacewith( ==> b, c)
@@ -134,6 +166,8 @@
     }
 
     equiv_right {
+      \schemaVar b: Formula;
+      \schemaVar c: Formula;
       \find( ==> equiv(b, c))
       "Case '->'":
         \replacewith(b ==> c);
@@ -143,20 +177,29 @@
     }
 
     split_or_strong {
+      \schemaVar b: Formula;
+      \schemaVar c: Formula;
       \find(or(b, c) ==>)
       \replacewith(b ==>);
       \replacewith(c ==> b)
     }
     rotate_and {
+      \schemaVar b: Formula;
+      \schemaVar c: Formula;
+      \schemaVar d: Formula;
       \find(and(b, and(c, d)))
       \replacewith(and(c, and(b, d)))
     }
     rotate_or {
+      \schemaVar b: Formula;
+      \schemaVar c: Formula;
+      \schemaVar d: Formula;
       \find(or(b, or(c, d)))
       \replacewith(or(c, or(b, d)))
     }
 
     double_not {
+      \schemaVar b: Formula;
       \find(not(not(b)))
       \replacewith(b)
       \rulesets(concrete)
@@ -174,69 +217,83 @@
     }
 
     concrete_impl_1 {
-      \find(impl(true, b))
+      \schemaVar b: Formula;
+      \find(imp(true, b))
       \replacewith(b)
       \rulesets(concrete)
     }
     concrete_impl_2 {
-      \find(impl(false, b))
+      \schemaVar b: Formula;
+      \find(imp(false, b))
       \replacewith(true)
       \rulesets(concrete)
     }
     concrete_impl_3 {
-      \find(impl(b, false))
+      \schemaVar b: Formula;
+      \find(imp(b, false))
       \replacewith(not(b))
       \rulesets(concrete)
     }
     concrete_impl_4 {
-      \find(impl(b, true))
+      \schemaVar b: Formula;
+      \find(imp(b, true))
       \replacewith(true)
       \rulesets(concrete)
     }
 
     concrete_and_1 {
+      \schemaVar b: Formula;
       \find(and(true, b))
       \replacewith(b)
       \rulesets(concrete)
     }
     concrete_and_2 {
+      \schemaVar b: Formula;
       \find(and(false, b))
       \replacewith(false)
       \rulesets(concrete)
     }
     concrete_and_3 {
+      \schemaVar b: Formula;
       \find(and(b, true))
       \replacewith(b)
       \rulesets(concrete)
     }
     concrete_and_4 {
+      \schemaVar b: Formula;
       \find(and(b, false))
       \replacewith(false)
       \rulesets(concrete)
     }
 
     concrete_or_1 {
+      \schemaVar b: Formula;
       \find(or(true, b))
       \replacewith(true)
       \rulesets(concrete)
     }
     concrete_or_2 {
+      \schemaVar b: Formula;
       \find(or(false, b))
       \replacewith(b)
       \rulesets(concrete)
     }
     concrete_or_3 {
+      \schemaVar b: Formula;
       \find(or(b, true))
       \replacewith(true)
       \rulesets(concrete)
     }
     concrete_or_4 {
+      \schemaVar b: Formula;
       \find(or(b, false))
       \replacewith(b) 
       \rulesets(concrete)
     }
 
     concrete_or_5 {
+      \schemaVar b: Formula;
+      \schemaVar c: Formula;
       \find(or(and(c, b), and(c, not(b))))
       \replacewith(c)
       \rulesets(concrete)
@@ -244,27 +301,32 @@
     }
 
     concrete_eq_1 {
+      \schemaVar b: Formula;
       \find(equiv(true, b))
       \replacewith(b)
       \rulesets(concrete)
     }
     concrete_eq_2 {
+      \schemaVar b: Formula;
       \find(equiv(false, b))
       \replacewith(not(b))
       \rulesets(concrete)
     }
     concrete_eq_3 {
+      \schemaVar b: Formula;
       \find(equiv(b, true))
       \replacewith(b) 
       \rulesets(concrete)
     }
     concrete_eq_4 {
+      \schemaVar b: Formula;
       \find(equiv(b, false))
       \replacewith(not(b))
       \rulesets(concrete)
     }
 
     cut {
+      \schemaVar cutFormula: Formula;
       "CUT: #cutFormula TRUE":
         \add(cutFormula ==>);
       "CUT: #cutFormula FALSE":
@@ -273,6 +335,7 @@
     }
 
     cut_direct {
+      \schemaVar cutFormula: Formula;
       \find(cutFormula)
       "CUT: #cutFormula TRUE":
         \replacewith(true)
@@ -284,11 +347,13 @@
     }
 
     cut_direct_r {
+      \schemaVar b: Formula;
       \find( ==> b)
       \replacewith( ==> b);
       \add(b ==>)
     }
     cut_direct_l {
+      \schemaVar b: Formula;
       \find(b ==>)
       \replacewith(b ==>);
       \add( ==> b)

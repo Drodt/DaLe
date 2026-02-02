@@ -57,7 +57,9 @@ create_visitor_traits! {
   term_or_seq: TermOrSeq,
   seq: Seq,
   goal_specs: GoalSpecs,
-  goal_spec: GoalSpec
+  goal_spec: GoalSpec,
+  rule_sets: Spanned<Vec<Path>>,
+  rule_set_decl: RuleSetDecl
 }
 
 pub fn visit_file<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a File) {
@@ -123,6 +125,11 @@ pub fn visit_item_kind<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a ItemKind) {
         ItemKind::Rules(rules) => {
             for r in rules {
                 v.visit_rule(r);
+            }
+        }
+        ItemKind::RuleSets(rs) => {
+            for r in rs {
+                v.visit_rule_set_decl(r);
             }
         }
     }
@@ -232,6 +239,21 @@ pub fn visit_term_kind<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a TermKind) {
                 v.visit_term(t);
             }
         }
+        TermKind::ParametricPath(path, args) => {
+            v.visit_path(path);
+            for a in args {
+                v.visit_generic_arg(a);
+            }
+        }
+        TermKind::ParametricCall(path, args, terms) => {
+            v.visit_path(path);
+            for a in args {
+                v.visit_generic_arg(a);
+            }
+            for t in terms {
+                v.visit_term(t);
+            }
+        }
     }
 }
 
@@ -249,9 +271,7 @@ pub fn visit_rule<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Rule) {
     }
     v.visit_goal_specs(&x.goal_specs);
     if let Some(rs) = &x.rule_sets {
-        for r in &rs.node {
-            v.visit_ident(r);
-        }
+        v.visit_rule_sets(rs);
     }
 }
 
@@ -300,4 +320,15 @@ pub fn visit_goal_spec<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a GoalSpec) {
     if let Some(a) = &x.add {
         v.visit_term_or_seq(a);
     }
+}
+
+pub fn visit_rule_sets<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Spanned<Vec<Path>>) {
+    for rs in &x.node {
+        v.visit_path(rs);
+    }
+}
+
+pub fn visit_rule_set_decl<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a RuleSetDecl) {
+    v.visit_id(&x.id);
+    v.visit_ident(&x.name);
 }

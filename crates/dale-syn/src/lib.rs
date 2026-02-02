@@ -123,6 +123,10 @@ pub fn err_report(input: &str, e: ParseError<usize, Token<'_>, &str>) -> String 
 
 #[cfg(test)]
 mod tests {
+    use dale_util::arena::DroplessArena;
+
+    use crate::{ctx::Ctx, resolve::resolve};
+
     use super::*;
 
     #[test]
@@ -157,8 +161,25 @@ mod tests {
             Err(e) => panic!("{}", err_report(&input, e)),
         };
 
-        println!("{rusty:?}");
+        assert_eq!(6, rusty.theories.len());
 
-        assert_eq!(6, rusty.theories.len())
+        let ir_arena = DroplessArena::default();
+        let cx = Ctx {
+            ir_arena: &ir_arena,
+            interner: &ctx.interner,
+        };
+        let resolver = resolve(cx, &rusty);
+        if !resolver.errors.is_empty() {
+            let e = &resolver.errors[0];
+            let start = e.span().start;
+            let pos = loc_to_pos(&input, start);
+            panic!(
+                "{}:{} '{}': {}",
+                pos.line,
+                pos.column,
+                get_line(&input, start),
+                e.format(cx)
+            )
+        }
     }
 }

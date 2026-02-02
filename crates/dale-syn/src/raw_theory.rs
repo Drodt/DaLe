@@ -72,6 +72,7 @@ pub enum ItemKind {
     Predicates(PredicateDecls),
     Axioms(),
     Rules(Rules),
+    RuleSets(RuleSetDecls),
 }
 
 #[derive(Debug, Clone)]
@@ -189,7 +190,9 @@ pub struct Term {
 #[derive(Debug, Clone)]
 pub enum TermKind {
     Path(Path),
+    ParametricPath(Path, Vec<GenericArg>),
     Call(Path, Vec<Term>),
+    ParametricCall(Path, Vec<GenericArg>, Vec<Term>),
 }
 
 type Rules = Vec<Rule>;
@@ -202,7 +205,7 @@ pub struct Rule {
     pub assumes: Option<Spanned<TermOrSeq>>,
     pub find: Option<Spanned<TermOrSeq>>,
     pub goal_specs: GoalSpecs,
-    pub rule_sets: Option<Spanned<Vec<Ident>>>,
+    pub rule_sets: Option<Spanned<Vec<Path>>>,
     pub display_name: Option<Spanned<String>>,
     pub span: Span,
 }
@@ -240,4 +243,12 @@ pub struct GoalSpec {
     pub name: Option<Ident>,
     pub replace_with: Option<TermOrSeq>,
     pub add: Option<TermOrSeq>,
+}
+
+pub type RuleSetDecls = Vec<RuleSetDecl>;
+
+#[derive(Debug, Clone)]
+pub struct RuleSetDecl {
+    pub id: NodeId,
+    pub name: Ident,
 }

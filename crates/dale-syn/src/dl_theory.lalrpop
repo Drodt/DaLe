@@ -30,7 +30,8 @@ ItemKind: ItemKind = {
     "\\functions" "{" <node:FunctionDecl*> "}" => ItemKind::Functions(node),
     "\\predicates" "{" <node:PredicateDecl*> "}" => ItemKind::Predicates(node),
     "\\axioms" "{" "}" => ItemKind::Axioms(),
-    "\\rules" "{" <rules:Rule*> "}" => ItemKind::Rules(rules)
+    "\\rules" "{" <rules:Rule*> "}" => ItemKind::Rules(rules),
+    "\\rulesets" "{" <rs:RuleSetDecl*> "}" => ItemKind::RuleSets(rs)
 }
 
 UseTree: UseTree = {
@@ -49,12 +50,14 @@ UseTree: UseTree = {
         kind: UseTreeKind::Simple(Some(i)),
         span: start..end
     },
-    <start: @L> <prefix:Path> "::{" <inner_start: @L> <items:Comma<UseTree>> <inner_end: @R> "}" <end: @R> => UseTree {
+    <start: @L> <prefix:Path> "::{" <inner_start: @L> <items:Comma<UseTreeWithId>> <inner_end: @R> "}" <end: @R> => UseTree {
         prefix,
         kind: UseTreeKind::Nested {items, span: inner_start..inner_end},
         span: start..end
     }
 }
+
+UseTreeWithId: (UseTree, NodeId) = <t:UseTree> => (t, ctx.id());
 
 Separated<T, S>: Vec<T> = {
     <mut v:(<T> <S>)*> <e:T> => {
@@ -87,11 +90,13 @@ DoubleColon<T>: Vec<T> = {
 }
 
 Path: Path = {
-    <start: @L> <segments:DoubleColon<Ident>> <end: @R> => 
+    <start: @L> <segments:DoubleColon<PathSegment>> <end: @R> => 
     Path {
         span: start..end, segments
     }
 } 
+
+PathSegment: PathSegment = <start: @L> <ident:Ident> <end: @R> => PathSegment { id: ctx.id(), ident, span: start..end };
 
 FunctionDecl: FunctionDecl = {
     <modifiers:FunctionModifiers> <name:Ident> "->" <sort:Sort> ";" => FunctionDecl {
@@ -257,6 +262,7 @@ SortModifiers: SortModifiers = {
 GenericParam: GenericParam = {
     <start: @L> "const" <name:Ident> <cstart: @L> ":" <cend: @R> <sort:Sort> <end: @R> => GenericParam {
         name,
+        id: ctx.id(),
         colon_span: Some(cstart..cend),
         kind: GenericParamKind::Const {
             sort,
@@ -264,7 +270,8 @@ GenericParam: GenericParam = {
         },
     },
     <name:Ident> => GenericParam {
-        name,
+        name, 
+        id: ctx.id(),
         colon_span: None,
         kind: GenericParamKind::Sort,
     }
@@ -352,13 +359,13 @@ GoalSpec: GoalSpec = {
     }
 }
 
-GoalSpecName: (String, Span) = {
-    <start: @L> <s:StringValue> ":" <end: @R> => (s, start..end)
+GoalSpecName: Ident = {
+    <start: @L> <s:StringValue> ":" <end: @R> => Spanned::new(ctx.intern(&s), start..end)
 }
 
 CloseGoal: Span = <start: @L> "\\closegoal" <end: @R> => start..end;
 
-RuleRuleSets: Spanned<Vec<Ident>> = <start: @L> "\\rulesets" "(" <rs:Comma<Ident>> ")" <end: @R> => Spanned::new(rs, start..end);
+RuleRuleSets: Spanned<Vec<Path>> = <start: @L> "\\rulesets" "(" <rs:Comma<Path>> ")" <end: @R> => Spanned::new(rs, start..end);
 
 DisplayName: Spanned<String> = <start: @L> "\\displayname" <l:StringValue> <end: @R> => Spanned::new(l, start..end);
 
@@ -366,5 +373,7 @@ TermOrSeq: TermOrSeq = {
     <ante:Comma<Term>> "==>" <succ:Comma<Term>> => TermOrSeq::Seq(Seq { id: ctx.id(), ante, succ }),
     <t:Term> => TermOrSeq::Term(t)
 }
+
+RuleSetDecl: RuleSetDecl = <i:Ident> ";" => RuleSetDecl {id: ctx.id(), name: i};
 
 StringValue: String = <l:r#""[^\n"]+""#> => l[1..l.len() - 1].into();
