@@ -5,7 +5,7 @@ use dale_util::symbol::{Interner, Symbol};
 
 use crate::{dl_theory::Token, raw_theory::NodeId};
 
-pub mod ast;
+pub mod ir;
 mod raw_theory;
 
 pub struct ParserCtx {

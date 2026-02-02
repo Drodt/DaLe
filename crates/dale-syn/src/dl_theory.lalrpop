@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use dale_util::symbol::Symbol;
 
-use crate::{theory::*, ParserCtx};
+use crate::{raw_theory::*, ParserCtx};
 
 grammar(ctx: &mut ParserCtx);
 

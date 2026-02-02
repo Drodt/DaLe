@@ -164,4 +164,24 @@ impl DroplessArena {
             slice::from_raw_parts_mut(mem, slice.len())
         }
     }
+
+    #[inline]
+    pub fn alloc<T>(&self, object: T) -> &mut T {
+        if !!mem::needs_drop::<T>() {
+            panic!("assertion failed: !mem::needs_drop::<T>()")
+        };
+        assert!(!mem::needs_drop::<T>());
+        if !(size_of::<T>() != 0) {
+            panic!("assertion failed: size_of::<T>() != 0")
+        };
+        assert!(size_of::<T>() != 0);
+
+        let mem = self.alloc_raw(Layout::new::<T>()) as *mut T;
+
+        unsafe {
+            // Write into uninitialized memory.
+            ptr::write(mem, object);
+            &mut *mem
+        }
+    }
 }
