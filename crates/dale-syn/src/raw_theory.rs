@@ -3,6 +3,9 @@ use std::ops::Range;
 use dale_macros::newtype_index;
 use dale_util::symbol::Symbol;
 
+mod visit;
+pub use visit::*;
+
 newtype_index! {
     /// Identifies an AST node.
     #[orderable]
@@ -10,7 +13,7 @@ newtype_index! {
     pub struct NodeId {}
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Spanned<T> {
     pub node: T,
     pub span: Span,
@@ -42,7 +45,14 @@ pub type Span = Range<usize>;
 #[derive(Debug, Clone)]
 pub struct Path {
     pub span: Span,
-    pub segments: Vec<Ident>,
+    pub segments: Vec<PathSegment>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PathSegment {
+    pub id: NodeId,
+    pub ident: Ident,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -74,7 +84,10 @@ pub struct UseTree {
 #[derive(Debug, Clone)]
 pub enum UseTreeKind {
     Simple(Option<Ident>),
-    Nested { items: Vec<UseTree>, span: Span },
+    Nested {
+        items: Vec<(UseTree, NodeId)>,
+        span: Span,
+    },
     Glob,
 }
 
@@ -154,6 +167,7 @@ pub enum GenericArg {
 
 #[derive(Debug, Clone)]
 pub struct GenericParam {
+    pub id: NodeId,
     pub name: Ident,
     pub kind: GenericParamKind,
     pub colon_span: Option<Span>,
@@ -223,7 +237,7 @@ pub enum GoalSpecs {
 #[derive(Debug, Clone)]
 pub struct GoalSpec {
     pub id: NodeId,
-    pub name: Option<(String, Span)>,
+    pub name: Option<Ident>,
     pub replace_with: Option<TermOrSeq>,
     pub add: Option<TermOrSeq>,
 }

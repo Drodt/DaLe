@@ -25,6 +25,7 @@
     }
 
     closeAntec {
+      \schemaVar b: Formula;
       \assumes( ==> b)
       \find(b ==>)
       \closegoal

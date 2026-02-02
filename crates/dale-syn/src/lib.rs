@@ -5,8 +5,10 @@ use dale_util::symbol::{Interner, Symbol};
 
 use crate::{dl_theory::Token, raw_theory::NodeId};
 
+mod ctx;
 pub mod ir;
-mod raw_theory;
+pub mod raw_theory;
+mod resolve;
 
 pub struct ParserCtx {
     next_id: NodeId,

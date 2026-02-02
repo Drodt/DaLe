@@ -15,6 +15,21 @@ newtype_index! {
   pub struct IrId {}
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
+pub struct DefId {
+    pub index: DefIndex,
+    pub file: FileId,
+}
+
+newtype_index! {
+    #[orderable]
+    #[debug_format = "DefIndex({})"]
+    pub struct DefIndex {
+        /// The file root is always assigned index 0 by the AST Map code
+        const FILE_DEF_INDEX = 0;
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ItemId {
     pub id: IrId,
@@ -59,7 +74,13 @@ pub struct Theory<'ir> {
 #[derive(Debug, Clone)]
 pub struct Path<'ir> {
     pub span: Span,
-    pub segments: &'ir [Ident],
+    pub segments: &'ir [PathSegment],
+}
+
+#[derive(Debug, Clone)]
+pub struct PathSegment {
+    pub id: IrId,
+    pub ident: Ident,
 }
 
 #[derive(Debug, Clone)]
@@ -242,4 +263,24 @@ pub struct GoalSpec<'ir> {
     pub name: Option<(String, Span)>,
     pub replace_with: Option<TermOrSeq<'ir>>,
     pub add: Option<TermOrSeq<'ir>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Res<Id = IrId> {
+    Def(DefKind, DefId),
+    Local(Id),
+    Err,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefKind {
+    File,
+    Theory,
+    Use,
+    Operator,
+    Sort,
+    DataType,
+    Pred,
+    Fn,
+    Rule,
 }

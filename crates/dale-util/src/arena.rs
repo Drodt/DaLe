@@ -167,13 +167,7 @@ impl DroplessArena {
 
     #[inline]
     pub fn alloc<T>(&self, object: T) -> &mut T {
-        if !!mem::needs_drop::<T>() {
-            panic!("assertion failed: !mem::needs_drop::<T>()")
-        };
         assert!(!mem::needs_drop::<T>());
-        if !(size_of::<T>() != 0) {
-            panic!("assertion failed: size_of::<T>() != 0")
-        };
         assert!(size_of::<T>() != 0);
 
         let mem = self.alloc_raw(Layout::new::<T>()) as *mut T;
@@ -183,5 +177,131 @@ impl DroplessArena {
             ptr::write(mem, object);
             &mut *mem
         }
+    }
+
+    /// # Safety
+    ///
+    /// The caller must ensure that `mem` is valid for writes up to `size_of::<T>() * len`, and that
+    /// that memory stays allocated and not shared for the lifetime of `self`. This must hold even
+    /// if `iter.next()` allocates onto `self`.
+    #[inline]
+    unsafe fn write_from_iter<T, I: Iterator<Item = T>>(
+        &self,
+        mut iter: I,
+        len: usize,
+        mem: *mut T,
+    ) -> &mut [T] {
+        let mut i = 0;
+        // Use a manual loop since LLVM manages to optimize it better for
+        // slice iterators
+        loop {
+            // SAFETY: The caller must ensure that `mem` is valid for writes up to
+            // `size_of::<T>() * len`.
+            unsafe {
+                match iter.next() {
+                    Some(value) if i < len => mem.add(i).write(value),
+                    Some(_) | None => {
+                        // We only return as many items as the iterator gave us, even
+                        // though it was supposed to give us `len`
+                        return slice::from_raw_parts_mut(mem, i);
+                    }
+                }
+            }
+            i += 1;
+        }
+    }
+
+    #[inline]
+    pub fn alloc_from_iter<T, I: IntoIterator<Item = T>>(&self, iter: I) -> &mut [T] {
+        // Warning: this function is reentrant: `iter` could hold a reference to `&self` and
+        // allocate additional elements while we're iterating.
+        let iter = iter.into_iter();
+        assert!(size_of::<T>() != 0);
+        assert!(!mem::needs_drop::<T>());
+
+        let size_hint = iter.size_hint();
+
+        match size_hint {
+            (min, Some(max)) if min == max => {
+                // We know the exact number of elements the iterator expects to produce here.
+                let len = min;
+
+                if len == 0 {
+                    return &mut [];
+                }
+
+                let mem = self.alloc_raw(Layout::array::<T>(len).unwrap()) as *mut T;
+                // SAFETY: `write_from_iter` doesn't touch `self`. It only touches the slice we just
+                // reserved. If the iterator panics or doesn't output `len` elements, this will
+                // leave some unallocated slots in the arena, which is fine because we do not call
+                // `drop`.
+                unsafe { self.write_from_iter(iter, len, mem) }
+            }
+            (_, _) => outline(
+                move || match self.try_alloc_from_iter(iter.map(Ok::<T, ()>)) {
+                    Ok(o) => o,
+                    Err(_) => unreachable!(),
+                },
+            ),
+        }
+    }
+
+    #[inline]
+    pub fn try_alloc_from_iter<T, E>(
+        &self,
+        iter: impl IntoIterator<Item = Result<T, E>>,
+    ) -> Result<&mut [T], E> {
+        // Despite the similarlty with `alloc_from_iter`, we cannot reuse their fast case, as we
+        // cannot know the minimum length of the iterator in this case.
+        assert!(size_of::<T>() != 0);
+
+        // Takes care of reentrancy.
+        let vec: Result<Vec<T>, E> = iter.into_iter().collect();
+        let mut vec = vec?;
+        if vec.is_empty() {
+            return Ok(&mut []);
+        }
+        // Move the content to the arena by copying and then forgetting it.
+        let len = vec.len();
+        Ok(unsafe {
+            let start_ptr = self.alloc_raw(Layout::for_value::<[T]>(vec.as_slice())) as *mut T;
+            vec.as_ptr().copy_to_nonoverlapping(start_ptr, len);
+            vec.set_len(0);
+            slice::from_raw_parts_mut(start_ptr, len)
+        })
+    }
+}
+
+/// This calls the passed function while ensuring it won't be inlined into the caller.
+#[inline(never)]
+#[cold]
+fn outline<F: FnOnce() -> R, R>(f: F) -> R {
+    f()
+}
+
+pub trait ArenaAllocatable<'tcx>: Sized {
+    #[allow(clippy::mut_from_ref)]
+    fn allocate_on(self, arena: &'tcx DroplessArena) -> &'tcx mut Self;
+    #[allow(clippy::mut_from_ref)]
+    fn allocate_from_iter(
+        arena: &'tcx DroplessArena,
+        iter: impl ::std::iter::IntoIterator<Item = Self>,
+    ) -> &'tcx mut [Self];
+}
+
+// Any type that impls `Copy` can be arena-allocated in the `DroplessArena`.
+impl<'cx, T: Copy> ArenaAllocatable<'cx> for T {
+    #[inline]
+    #[allow(clippy::mut_from_ref)]
+    fn allocate_on(self, arena: &'cx DroplessArena) -> &'cx mut Self {
+        arena.alloc(self)
+    }
+    #[inline]
+    #[allow(clippy::mut_from_ref)]
+    fn allocate_from_iter(
+        arena: &'cx DroplessArena,
+        iter: impl ::std::iter::IntoIterator<Item = Self>,
+    ) -> &'cx mut [Self] {
+        arena.alloc_from_iter(iter)
     }
 }
