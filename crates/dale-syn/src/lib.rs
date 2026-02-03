@@ -15,6 +15,12 @@ pub struct ParserCtx {
     interner: Interner<Symbol>,
 }
 
+impl Default for ParserCtx {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ParserCtx {
     pub fn new() -> Self {
         Self {

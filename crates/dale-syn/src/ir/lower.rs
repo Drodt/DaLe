@@ -7,7 +7,7 @@ use crate::{
     raw_theory::{self as raw, NodeId},
 };
 
-pub fn lower(file: raw::File) -> Map<'static> {
+pub fn lower(_file: raw::File) -> Map<'static> {
     Map { file: todo!() }
 }
 
@@ -28,7 +28,7 @@ impl<'ir> LowerCtx<'ir> {
 }
 
 impl<'ir> LowerCtx<'ir> {
-    fn ir_id(&mut self, id: NodeId) -> IrId {
+    fn ir_id(&mut self, _id: NodeId) -> IrId {
         todo!()
     }
 
@@ -47,7 +47,7 @@ impl<'ir> LowerCtx<'ir> {
         }
     }
 
-    fn lower_node_id(&mut self, node_id: raw::NodeId) -> IrId {
+    fn lower_node_id(&mut self, _node_id: raw::NodeId) -> IrId {
         todo!()
     }
 

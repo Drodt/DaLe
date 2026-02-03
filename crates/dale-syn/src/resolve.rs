@@ -6,7 +6,6 @@ use indexmap::IndexMap;
 
 use crate::{
     ctx::Ctx,
-    get_line,
     ir::{DefId, DefKind, LocalDefId, Res},
     raw_theory::{
         self as raw, File, Ident, NodeId, PathSegment, Span, UseTreeKind, Visit, visit_file,
@@ -184,7 +183,7 @@ impl<'cx> Resolver<'cx> {
     }
 }
 
-fn collect_defs<'cx, 'a>(cx: Ctx<'cx>, resolver: &'a mut Resolver<'cx>, file: &File) {
+fn collect_defs<'cx>(cx: Ctx<'cx>, resolver: &mut Resolver<'cx>, file: &File) {
     let mut coll = DefCollector::new(cx, resolver);
     coll.visit_file(file);
 }
@@ -516,7 +515,7 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         let td = &self.theory_data[&def_id];
         let uk = &x.kind;
         Self::add_imports(
-            &mut x.prefix.segments.iter().cloned().collect(),
+            &mut x.prefix.segments.to_vec(),
             uk,
             td,
             &mut self.scopes,
