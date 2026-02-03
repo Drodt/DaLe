@@ -193,9 +193,9 @@ pub fn visit_sort<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Sort) {
 
 pub fn visit_sort_kind<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a SortKind) {
     match &x {
-        SortKind::Simple(ident) => v.visit_ident(ident),
+        SortKind::Simple(ident) => v.visit_path(ident),
         SortKind::Parametric(ident, generic_args) => {
-            v.visit_ident(ident);
+            v.visit_path(ident);
             for a in generic_args {
                 v.visit_generic_arg(a);
             }

@@ -18,7 +18,7 @@ newtype_index! {
   pub struct IrId {}
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy, Hash)]
 pub struct DefId {
     pub index: DefIndex,
     pub file: FileId,

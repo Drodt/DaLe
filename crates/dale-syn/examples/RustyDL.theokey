@@ -364,6 +364,10 @@
 \theory FOL {
   \use Prop::*;
 
+  \sorts {
+    \meta NUMBER;
+  }
+
   \operators {
     \rigid all<S>{0}(Formula) -> Formula;
     \rigid exists<S>{0}(Formula) -> Formula;
@@ -377,6 +381,8 @@
 }
 
 \theory IfThenElse {
+  \use Prop::*;
+  
   \operators {
     \rigid ifThenElse<S>(Formula, S, S) -> S;
   }

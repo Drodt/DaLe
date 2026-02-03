@@ -44,6 +44,7 @@ pub type Span = Range<usize>;
 
 #[derive(Debug, Clone)]
 pub struct Path {
+    pub id: NodeId,
     pub span: Span,
     pub segments: Vec<PathSegment>,
 }
@@ -156,8 +157,8 @@ pub struct Sort {
 
 #[derive(Debug, Clone)]
 pub enum SortKind {
-    Simple(Ident),
-    Parametric(Ident, Vec<GenericArg>),
+    Simple(Path),
+    Parametric(Path, Vec<GenericArg>),
 }
 
 #[derive(Debug, Clone)]

@@ -7,12 +7,12 @@ use indexmap::IndexMap;
 use crate::{
     ctx::Ctx,
     get_line,
-    ir::{DefKind, LocalDefId, Res},
+    ir::{DefId, DefKind, LocalDefId, Res},
     raw_theory::{
-        self as raw, File, Ident, NodeId, Span, Visit, visit_file, visit_function_decl,
-        visit_generic_param, visit_item, visit_item_kind, visit_predicate_decl, visit_rule,
-        visit_rule_sets, visit_schema_var_decl, visit_sort, visit_sort_decl, visit_term,
-        visit_theory, visit_use_tree,
+        self as raw, File, Ident, NodeId, PathSegment, Span, UseTreeKind, Visit, visit_file,
+        visit_function_decl, visit_generic_param, visit_item, visit_item_kind,
+        visit_predicate_decl, visit_rule, visit_rule_sets, visit_schema_var_decl, visit_sort,
+        visit_sort_decl, visit_term, visit_theory, visit_use_tree,
     },
 };
 
@@ -71,7 +71,9 @@ impl<R> Scope<R> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeKind {
+    Use,
     Normal,
     File,
     Theory,
@@ -185,6 +187,10 @@ impl<'cx> Resolver<'cx> {
 fn collect_defs<'cx, 'a>(cx: Ctx<'cx>, resolver: &'a mut Resolver<'cx>, file: &File) {
     let mut coll = DefCollector::new(cx, resolver);
     coll.visit_file(file);
+}
+
+struct TheoryData {
+    scopes: PerNS<Scope>,
 }
 
 pub struct DefCollector<'a, 'cx> {
@@ -309,6 +315,7 @@ pub struct ScopeBuilder<'a, 'cx> {
     resolver: &'a mut Resolver<'cx>,
     in_operator_context: bool,
     expected_ns: Namespace,
+    theory_data: HashMap<DefId, TheoryData>,
 }
 
 impl<'a, 'cx> ScopeBuilder<'a, 'cx> {
@@ -319,6 +326,7 @@ impl<'a, 'cx> ScopeBuilder<'a, 'cx> {
             resolver,
             in_operator_context: false,
             expected_ns: Namespace::TheoryNS,
+            theory_data: Default::default(),
         }
     }
 
@@ -376,6 +384,51 @@ impl<'a, 'cx> ScopeBuilder<'a, 'cx> {
             }
         };
     }
+
+    fn add_imports(
+        path: &mut Vec<PathSegment>,
+        uk: &UseTreeKind,
+        td: &TheoryData,
+        scopes: &mut PerNS<Vec<Scope>>,
+    ) {
+        let nss = [
+            Namespace::OpNS,
+            Namespace::RuleNS,
+            Namespace::RuleSetNS,
+            Namespace::SortNS,
+        ];
+        match uk {
+            UseTreeKind::Simple(ident) => {
+                for ns in nss {
+                    if let Some(r) = td.scopes[ns].bindings.get(&path.last().unwrap().ident.node) {
+                        let s = scopes[ns].last_mut().unwrap();
+                        let ident = if let Some(i) = ident {
+                            i.node
+                        } else {
+                            path.last().unwrap().ident.node
+                        };
+                        s.bindings.insert(ident, *r);
+                    }
+                }
+            }
+            UseTreeKind::Nested { items, .. } => {
+                let orig_len = path.len();
+                for (t, _) in items {
+                    path.extend(t.prefix.segments.iter().cloned());
+                    Self::add_imports(path, &t.kind, td, scopes);
+                    for _ in orig_len..path.len() {
+                        path.pop();
+                    }
+                }
+            }
+            UseTreeKind::Glob => {
+                for ns in nss {
+                    let s = scopes[ns].last_mut().unwrap();
+                    s.bindings.extend(td.scopes[ns].bindings.iter());
+                }
+            }
+        }
+    }
 }
 
 impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
@@ -389,18 +442,85 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         self.scopes[Namespace::SortNS].push(Scope::new(ScopeKind::Theory));
         self.scopes[Namespace::RuleNS].push(Scope::new(ScopeKind::Theory));
         visit_theory(self, x);
-        self.scopes[Namespace::RuleNS].pop();
-        self.scopes[Namespace::SortNS].pop();
-        self.scopes[Namespace::RuleSetNS].pop();
-        self.scopes[Namespace::OpNS].pop();
+        let mut theory = TheoryData {
+            scopes: PerNS {
+                op_ns: Scope::new(ScopeKind::Theory),
+                theory_ns: Scope::new(ScopeKind::Theory),
+                rule_ns: Scope::new(ScopeKind::Theory),
+                rule_set_ns: Scope::new(ScopeKind::Theory),
+                sort_ns: Scope::new(ScopeKind::Theory),
+            },
+        };
+        for ns in [
+            Namespace::OpNS,
+            Namespace::RuleSetNS,
+            Namespace::RuleNS,
+            Namespace::SortNS,
+        ] {
+            while let Some(scope) = self.scopes[ns].pop() {
+                if scope.kind == ScopeKind::File {
+                    self.scopes[ns].push(scope);
+                    break;
+                }
+                if scope.kind == ScopeKind::Use {
+                    // We ignore important items
+                    continue;
+                }
+                theory.scopes[ns]
+                    .bindings
+                    .extend(scope.bindings.into_iter());
+            }
+        }
+        let def_id = self.resolver.node_id_to_def_id[&x.id].to_def_id();
+        self.add_res(
+            Namespace::TheoryNS,
+            x.name.clone(),
+            Res::Def(DefKind::Theory, def_id),
+        );
+        self.theory_data.insert(def_id, theory);
     }
 
     fn visit_item_kind(&mut self, x: &'ast raw::ItemKind) {
         if let raw::ItemKind::Operators(..) = &x {
             self.in_operator_context = true;
+        } else if let raw::ItemKind::Use(..) = &x {
+            let nss = [
+                Namespace::OpNS,
+                Namespace::RuleNS,
+                Namespace::RuleSetNS,
+                Namespace::SortNS,
+            ];
+
+            for ns in nss {
+                self.scopes[ns].push(Scope::new(ScopeKind::Use));
+            }
+
+            visit_item_kind(self, x);
+
+            for ns in nss {
+                self.scopes[ns].push(Scope::new(ScopeKind::Normal));
+            }
+            return;
         }
         visit_item_kind(self, x);
         self.in_operator_context = false;
+    }
+
+    fn visit_use_tree(&mut self, x: &'ast raw::UseTree) {
+        // Resolve theorx
+        self.expected_ns = Namespace::TheoryNS;
+        self.visit_path(&x.prefix);
+        let Res::Def(DefKind::Theory, def_id) = self.resolver.resolved[&x.prefix.id] else {
+            panic!("Expected theory")
+        };
+        let td = &self.theory_data[&def_id];
+        let uk = &x.kind;
+        Self::add_imports(
+            &mut x.prefix.segments.iter().cloned().collect(),
+            uk,
+            td,
+            &mut self.scopes,
+        );
     }
 
     fn visit_function_decl(&mut self, x: &'ast raw::FunctionDecl) {
@@ -521,6 +641,7 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         for sc in self.scopes[self.expected_ns].iter().rev() {
             if let Some(res) = sc.bindings.get(&seg.ident.node) {
                 self.resolver.resolved.insert(seg.id, *res);
+                self.resolver.resolved.insert(x.id, *res);
                 return;
             }
         }

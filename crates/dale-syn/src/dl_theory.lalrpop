@@ -92,7 +92,9 @@ DoubleColon<T>: Vec<T> = {
 Path: Path = {
     <start: @L> <segments:DoubleColon<PathSegment>> <end: @R> => 
     Path {
-        span: start..end, segments
+        id: ctx.id(),
+        span: start..end,
+         segments
     }
 } 
 
@@ -219,15 +221,15 @@ WhereToBind: Vec<u8> = "{" <nums:Comma<NumU8>> "}" => nums;
 NumU8: u8 = <s:r"[0-9]+"> => u8::from_str(s).unwrap();
 
 Sort: Sort = {
-    <start: @L> <name:Ident> "<" <args:Comma<GenericArg>> ">" <end: @R> => Sort {
+    <start: @L> <path:Path> "<" <args:Comma<GenericArg>> ">" <end: @R> => Sort {
         id: ctx.id(),
         span: start..end,
-        kind: SortKind::Parametric(name, args)
+        kind: SortKind::Parametric(path, args)
     },
-    <start: @L> <name:Ident> <end: @R> => Sort {
+    <start: @L> <path:Path> <end: @R> => Sort {
         id: ctx.id(),
         span: start..end,
-        kind: SortKind::Simple(name)
+        kind: SortKind::Simple(path)
     },
 }
 
