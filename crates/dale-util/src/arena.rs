@@ -149,6 +149,7 @@ impl DroplessArena {
     ///  - Zero-sized types
     ///  - Zero-length slices
     #[inline]
+    #[allow(clippy::mut_from_ref)]
     pub fn alloc_slice<T>(&self, slice: &[T]) -> &mut [T]
     where
         T: Copy,
@@ -166,6 +167,7 @@ impl DroplessArena {
     }
 
     #[inline]
+    #[allow(clippy::mut_from_ref)]
     pub fn alloc<T>(&self, object: T) -> &mut T {
         assert!(!mem::needs_drop::<T>());
         assert!(size_of::<T>() != 0);
@@ -185,6 +187,7 @@ impl DroplessArena {
     /// that memory stays allocated and not shared for the lifetime of `self`. This must hold even
     /// if `iter.next()` allocates onto `self`.
     #[inline]
+    #[allow(clippy::mut_from_ref)]
     unsafe fn write_from_iter<T, I: Iterator<Item = T>>(
         &self,
         mut iter: I,
@@ -212,6 +215,7 @@ impl DroplessArena {
     }
 
     #[inline]
+    #[allow(clippy::mut_from_ref)]
     pub fn alloc_from_iter<T, I: IntoIterator<Item = T>>(&self, iter: I) -> &mut [T] {
         // Warning: this function is reentrant: `iter` could hold a reference to `&self` and
         // allocate additional elements while we're iterating.
@@ -247,6 +251,7 @@ impl DroplessArena {
     }
 
     #[inline]
+    #[allow(clippy::mut_from_ref)]
     pub fn try_alloc_from_iter<T, E>(
         &self,
         iter: impl IntoIterator<Item = Result<T, E>>,
