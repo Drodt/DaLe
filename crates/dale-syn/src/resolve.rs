@@ -102,6 +102,7 @@ impl Display for Namespace {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct PerNS<T> {
     pub op_ns: T,
     pub theory_ns: T,
@@ -180,6 +181,10 @@ impl<'cx> Resolver<'cx> {
             resolved: Default::default(),
             errors: Vec::new(),
         }
+    }
+
+    pub fn get_res(&self, id: NodeId) -> Option<Res> {
+        self.resolved.get(&id).copied()
     }
 }
 
@@ -514,12 +519,7 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         };
         let td = &self.theory_data[&def_id];
         let uk = &x.kind;
-        Self::add_imports(
-            &mut x.prefix.segments.to_vec(),
-            uk,
-            td,
-            &mut self.scopes,
-        );
+        Self::add_imports(&mut x.prefix.segments.to_vec(), uk, td, &mut self.scopes);
     }
 
     fn visit_function_decl(&mut self, x: &'ast raw::FunctionDecl) {

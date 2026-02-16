@@ -2,6 +2,8 @@ use dale_index::Idx;
 use dale_macros::newtype_index;
 use dale_util::symbol::Symbol;
 
+use crate::resolve::PerNS;
+
 pub mod lower;
 
 newtype_index! {
@@ -118,8 +120,10 @@ pub struct Theory<'ir> {
 }
 
 #[derive(Debug, Clone)]
-pub struct Path<'ir> {
+pub struct Path<'ir, R = Res> {
+    pub id: IrId,
     pub span: Span,
+    pub res: R,
     pub segments: &'ir [PathSegment],
 }
 
@@ -127,6 +131,7 @@ pub struct Path<'ir> {
 pub struct PathSegment {
     pub id: IrId,
     pub ident: Ident,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -138,7 +143,7 @@ pub struct Item<'ir> {
 
 #[derive(Debug, Clone)]
 pub enum ItemKind<'ir> {
-    Use(UseTree<'ir>),
+    Use(UsePath<'ir>, UseKind),
     Operators(&'ir [OperatorDecl<'ir>]),
     Sorts(&'ir [SortDecl<'ir>]),
     DataTypes(DataTypeDecls),
@@ -148,20 +153,11 @@ pub enum ItemKind<'ir> {
     Rules(&'ir [Rule<'ir>]),
 }
 
-#[derive(Debug, Clone)]
-pub struct UseTree<'ir> {
-    pub prefix: &'ir Path<'ir>,
-    pub kind: UseTreeKind<'ir>,
-    pub span: Span,
-}
+pub type UsePath<'ir> = Path<'ir, PerNS<Option<Res>>>;
 
-#[derive(Debug, Clone)]
-pub enum UseTreeKind<'ir> {
-    Simple(Option<Ident>),
-    Nested {
-        items: &'ir [UseTree<'ir>],
-        span: Span,
-    },
+#[derive(Debug, Clone, Copy)]
+pub enum UseKind {
+    Single(Ident),
     Glob,
 }
 

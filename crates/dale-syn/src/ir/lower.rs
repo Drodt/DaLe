@@ -5,6 +5,7 @@ use super::*;
 use crate::{
     ctx::Ctx,
     raw_theory::{self as raw, NodeId},
+    resolve::Resolver,
 };
 
 pub fn lower(_file: raw::File) -> Map<'static> {
@@ -13,14 +14,16 @@ pub fn lower(_file: raw::File) -> Map<'static> {
 
 struct LowerCtx<'ir> {
     cx: Ctx<'ir>,
+    resolver: Resolver<'ir>,
     arena: &'ir DroplessArena,
     current_file_id: FileId,
 }
 
 impl<'ir> LowerCtx<'ir> {
-    fn new(cx: Ctx<'ir>) -> Self {
+    fn new(cx: Ctx<'ir>, resolver: Resolver<'ir>) -> Self {
         Self {
             cx,
+            resolver,
             arena: cx.ir_arena,
             current_file_id: FileId::ZERO,
         }
@@ -83,16 +86,24 @@ impl<'ir> LowerCtx<'ir> {
     }
 
     fn lower_path(&mut self, path: raw::Path) -> &'ir Path<'ir> {
+        let id = self.lower_node_id(path.id);
         let span = self.lower_span(&path.span);
+        let res = self.resolver.get_res(path.id).unwrap_or(Res::Err);
         let segments = self
             .arena
             .alloc_from_iter(path.segments.iter().map(|s| self.lower_segment(s)));
-        self.arena.alloc(Path { span, segments })
+        self.arena.alloc(Path {
+            id,
+            span,
+            segments,
+            res,
+        })
     }
 
     fn lower_segment(&mut self, s: &raw::PathSegment) -> PathSegment {
         let id = self.lower_node_id(s.id);
         let ident = self.lower_ident(&s.ident);
-        PathSegment { id, ident }
+        let span = self.lower_span(&s.span);
+        PathSegment { id, ident, span }
     }
 }
