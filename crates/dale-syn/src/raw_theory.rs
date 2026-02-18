@@ -1,5 +1,3 @@
-use std::ops::Range;
-
 use dale_macros::newtype_index;
 use dale_util::symbol::Symbol;
 
@@ -13,7 +11,7 @@ newtype_index! {
     pub struct NodeId {}
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Spanned<T> {
     pub node: T,
     pub span: Span,
@@ -40,11 +38,11 @@ pub struct Theory {
     pub items: Vec<Item>,
 }
 
-pub type Span = Range<usize>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Span(pub usize, pub usize);
 
 #[derive(Debug, Clone)]
 pub struct Path {
-    pub id: NodeId,
     pub span: Span,
     pub segments: Vec<PathSegment>,
 }
@@ -81,6 +79,22 @@ pub struct UseTree {
     pub prefix: Path,
     pub kind: UseTreeKind,
     pub span: Span,
+}
+
+impl UseTree {
+    pub fn ident(&self) -> Ident {
+        match self.kind {
+            UseTreeKind::Simple(Some(rename)) => rename,
+            UseTreeKind::Simple(None) => {
+                self.prefix
+                    .segments
+                    .last()
+                    .expect("empty prefix in a simple ident")
+                    .ident
+            }
+            _ => panic!("`UseTree::ident` can only be used on a simple import"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

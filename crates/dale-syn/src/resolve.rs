@@ -102,7 +102,7 @@ impl Display for Namespace {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct PerNS<T> {
     pub op_ns: T,
     pub theory_ns: T,
@@ -164,11 +164,22 @@ where
     }
 }
 
+impl<T> PerNS<Option<T>> {
+    pub fn is_empty(&self) -> bool {
+        self.op_ns.is_none()
+            && self.theory_ns.is_none()
+            && self.rule_ns.is_none()
+            && self.rule_set_ns.is_none()
+            && self.sort_ns.is_none()
+    }
+}
+
 pub struct Resolver<'cx> {
     cx: Ctx<'cx>,
     node_id_to_def_id: HashMap<NodeId, LocalDefId>,
     next_def_id: LocalDefId,
     resolved: HashMap<NodeId, Res>,
+    import_res_map: HashMap<NodeId, PerNS<Option<Res>>>,
     pub errors: Vec<ResolveErr>,
 }
 
@@ -179,12 +190,17 @@ impl<'cx> Resolver<'cx> {
             node_id_to_def_id: HashMap::new(),
             next_def_id: LocalDefId::new(0),
             resolved: Default::default(),
+            import_res_map: Default::default(),
             errors: Vec::new(),
         }
     }
 
     pub fn get_res(&self, id: NodeId) -> Option<Res> {
         self.resolved.get(&id).copied()
+    }
+
+    pub fn get_import_res(&self, id: NodeId) -> PerNS<Option<Res>> {
+        self.import_res_map[&id]
     }
 }
 
@@ -514,7 +530,9 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         // Resolve theorx
         self.expected_ns = Namespace::TheoryNS;
         self.visit_path(&x.prefix);
-        let Res::Def(DefKind::Theory, def_id) = self.resolver.resolved[&x.prefix.id] else {
+        let Res::Def(DefKind::Theory, def_id) =
+            self.resolver.resolved[&x.prefix.segments.last().unwrap().id]
+        else {
             panic!("Expected theory")
         };
         let td = &self.theory_data[&def_id];
@@ -640,7 +658,6 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         for sc in self.scopes[self.expected_ns].iter().rev() {
             if let Some(res) = sc.bindings.get(&seg.ident.node) {
                 self.resolver.resolved.insert(seg.id, *res);
-                self.resolver.resolved.insert(x.id, *res);
                 return;
             }
         }

@@ -78,7 +78,7 @@ newtype_index! {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ItemId {
     pub id: IrId,
 }
@@ -121,7 +121,6 @@ pub struct Theory<'ir> {
 
 #[derive(Debug, Clone)]
 pub struct Path<'ir, R = Res> {
-    pub id: IrId,
     pub span: Span,
     pub res: R,
     pub segments: &'ir [PathSegment],
@@ -136,14 +135,14 @@ pub struct PathSegment {
 
 #[derive(Debug, Clone)]
 pub struct Item<'ir> {
-    pub id: IrId,
+    pub id: ItemId,
     pub kind: ItemKind<'ir>,
     pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub enum ItemKind<'ir> {
-    Use(UsePath<'ir>, UseKind),
+    Use(&'ir UsePath<'ir>, UseKind),
     Operators(&'ir [OperatorDecl<'ir>]),
     Sorts(&'ir [SortDecl<'ir>]),
     DataTypes(DataTypeDecls),

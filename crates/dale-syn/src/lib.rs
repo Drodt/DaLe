@@ -177,7 +177,7 @@ mod tests {
         let resolver = resolve(cx, &rusty);
         if !resolver.errors.is_empty() {
             let e = &resolver.errors[0];
-            let start = e.span().start;
+            let start = e.span().0;
             let pos = loc_to_pos(&input, start);
             panic!(
                 "{}:{} '{}': {}",
