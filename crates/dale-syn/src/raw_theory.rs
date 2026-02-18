@@ -220,8 +220,8 @@ pub struct Rule {
     pub assumes: Option<Spanned<TermOrSeq>>,
     pub find: Option<Spanned<TermOrSeq>>,
     pub goal_specs: GoalSpecs,
-    pub rule_sets: Option<Spanned<Vec<Path>>>,
-    pub display_name: Option<Spanned<String>>,
+    pub rule_sets: Option<Spanned<Vec<(NodeId, Path)>>>,
+    pub display_name: Option<Spanned<Symbol>>,
     pub span: Span,
 }
 

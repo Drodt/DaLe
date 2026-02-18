@@ -16,11 +16,11 @@ pub Theory: Theory = {
 };
 
 pub Ident: Spanned<Symbol> = {
-    <start: @L> <s:r"[a-zA-Z][a-zA-Z0-9_]*"> <end: @R> => Spanned::new(ctx.intern(s), start..end),
-    <start: @L> <s:r"_[a-zA-Z0-9]+"> <end: @R> => Spanned::new(ctx.intern(s), start..end),
+    <start: @L> <s:r"[a-zA-Z][a-zA-Z0-9_]*"> <end: @R> => Spanned::new(ctx.intern(s), Span(start, end)),
+    <start: @L> <s:r"_[a-zA-Z0-9]+"> <end: @R> => Spanned::new(ctx.intern(s), Span(start, end)),
 }
 
-Item: Item = <start: @L> <k:ItemKind> <end: @R> => Item {id: ctx.id(), span: start..end, kind: k};
+Item: Item = <start: @L> <k:ItemKind> <end: @R> => Item {id: ctx.id(), span: Span(start, end), kind: k};
 
 ItemKind: ItemKind = {
     "\\use" <UseTree> ";" => ItemKind::Use(<>),
@@ -38,22 +38,22 @@ UseTree: UseTree = {
     <start: @L> <prefix:Path> "::*" <end: @R> => UseTree {
         prefix,
         kind: UseTreeKind::Glob,
-        span: start..end
+        span: Span(start, end)
     },
     <start: @L> <prefix:Path> <end: @R> => UseTree {
         prefix,
         kind: UseTreeKind::Simple(None),
-        span: start..end
+        span: Span(start, end)
     },
     <start: @L> <prefix:Path> "as" <i:Ident> <end: @R> => UseTree {
         prefix,
         kind: UseTreeKind::Simple(Some(i)),
-        span: start..end
+        span: Span(start, end)
     },
     <start: @L> <prefix:Path> "::{" <inner_start: @L> <items:Comma<UseTreeWithId>> <inner_end: @R> "}" <end: @R> => UseTree {
         prefix,
-        kind: UseTreeKind::Nested {items, span: inner_start..inner_end},
-        span: start..end
+        kind: UseTreeKind::Nested {items, span: Span(inner_start, inner_end)},
+        span: Span(start, end)
     }
 }
 
@@ -92,13 +92,12 @@ DoubleColon<T>: Vec<T> = {
 Path: Path = {
     <start: @L> <segments:DoubleColon<PathSegment>> <end: @R> => 
     Path {
-        id: ctx.id(),
-        span: start..end,
-         segments
+        span: Span(start, end),
+        segments
     }
 } 
 
-PathSegment: PathSegment = <start: @L> <ident:Ident> <end: @R> => PathSegment { id: ctx.id(), ident, span: start..end };
+PathSegment: PathSegment = <start: @L> <ident:Ident> <end: @R> => PathSegment { id: ctx.id(), ident, span: Span(start, end) };
 
 FunctionDecl: FunctionDecl = {
     <modifiers:FunctionModifiers> <name:Ident> "->" <sort:Sort> ";" => FunctionDecl {
@@ -223,12 +222,12 @@ NumU8: u8 = <s:r"[0-9]+"> => u8::from_str(s).unwrap();
 Sort: Sort = {
     <start: @L> <path:Path> "<" <args:Comma<GenericArg>> ">" <end: @R> => Sort {
         id: ctx.id(),
-        span: start..end,
+        span: Span(start, end),
         kind: SortKind::Parametric(path, args)
     },
     <start: @L> <path:Path> <end: @R> => Sort {
         id: ctx.id(),
-        span: start..end,
+        span: Span(start, end),
         kind: SortKind::Simple(path)
     },
 }
@@ -239,7 +238,7 @@ SortDecl: SortDecl = {
         id: ctx.id(),
         modifiers,
         name,
-        span: start..end,
+        span: Span(start, end),
         params,
         extends: None
     },
@@ -248,7 +247,7 @@ SortDecl: SortDecl = {
         id: ctx.id(),
         modifiers,
         name,
-        span: start..end,
+        span: Span(start, end),
         params: vec![],
         extends: None
     }
@@ -265,10 +264,10 @@ GenericParam: GenericParam = {
     <start: @L> "const" <name:Ident> <cstart: @L> ":" <cend: @R> <sort:Sort> <end: @R> => GenericParam {
         name,
         id: ctx.id(),
-        colon_span: Some(cstart..cend),
+        colon_span: Some(Span(cstart, cend)),
         kind: GenericParamKind::Const {
             sort,
-            span: start..end
+            span: Span(start, end)
         },
     },
     <name:Ident> => GenericParam {
@@ -280,19 +279,19 @@ GenericParam: GenericParam = {
 }
 
 GenericArg: GenericArg = {
-    <start: @L> "const" <t:Term> <end: @R> => GenericArg::Const(t, start..end),
+    <start: @L> "const" <t:Term> <end: @R> => GenericArg::Const(t, Span(start, end)),
     <Sort> => GenericArg::Sort(<>)
 }
 
 Term: Term = {
     <start: @L> <p:Path> "(" <args:Comma<Term>> ")" <end: @R> => Term {
         id: ctx.id(),
-        span: start..end,
+        span: Span(start, end),
         kind: TermKind::Call(p, args)
     },
     <start: @L> <p:Path> <end: @R> => Term {
         id: ctx.id(),
-        span: start..end,
+        span: Span(start, end),
         kind: TermKind::Path(p)
     }
 }
@@ -314,30 +313,30 @@ Rule: Rule = {
         goal_specs,
         rule_sets,
         display_name,
-        span: start..end
+        span: Span(start, end)
     }
 }
 
 SchemaVarDecl: SchemaVarDecl = {
     <start: @L> "\\schemaVar" <name:Ident> ":" <sort:Sort> ";" <end: @R> => SchemaVarDecl {
         id: ctx.id(),
-        span: start..end,
+        span: Span(start, end),
         name,
         sort
     }
 }
 
 Assumes: Spanned<TermOrSeq> = {
-    <start: @L> "\\assumes" "(" <tos:TermOrSeq> ")" <end:@R> => Spanned::new(tos, start..end)
+    <start: @L> "\\assumes" "(" <tos:TermOrSeq> ")" <end:@R> => Spanned::new(tos, Span(start, end))
 }
 
 Find: Spanned<TermOrSeq> = {
-    <start: @L> "\\find" "(" <tos:TermOrSeq> ")" <end:@R> => Spanned::new(tos, start..end)
+    <start: @L> "\\find" "(" <tos:TermOrSeq> ")" <end:@R> => Spanned::new(tos, Span(start, end))
 }
 
 GoalSpecs: GoalSpecs = {
-    <start: @L> "\\closegoal" <end:@R> => GoalSpecs::CloseGoal(ctx.id(), start..end),
-    <start: @L> <specs:Semi<GoalSpec>> <end: @R> => GoalSpecs::Specs(specs, start..end)
+    <start: @L> "\\closegoal" <end:@R> => GoalSpecs::CloseGoal(ctx.id(), Span(start, end)),
+    <start: @L> <specs:Semi<GoalSpec>> <end: @R> => GoalSpecs::Specs(specs, Span(start, end))
 }
 
 GoalSpec: GoalSpec = {
@@ -362,14 +361,14 @@ GoalSpec: GoalSpec = {
 }
 
 GoalSpecName: Ident = {
-    <start: @L> <s:StringValue> ":" <end: @R> => Spanned::new(ctx.intern(&s), start..end)
+    <start: @L> <s:StringValue> ":" <end: @R> => Spanned::new(ctx.intern(&s), Span(start, end))
 }
 
-CloseGoal: Span = <start: @L> "\\closegoal" <end: @R> => start..end;
+CloseGoal: Span = <start: @L> "\\closegoal" <end: @R> => Span(start, end);
 
-RuleRuleSets: Spanned<Vec<Path>> = <start: @L> "\\rulesets" "(" <rs:Comma<Path>> ")" <end: @R> => Spanned::new(rs, start..end);
+RuleRuleSets: Spanned<Vec<(NodeId, Path)>> = <start: @L> "\\rulesets" "(" <rs:Comma<Path>> ")" <end: @R> => Spanned::new(rs.into_iter().map(|r| (ctx.id(), r)).collect(), Span(start, end));
 
-DisplayName: Spanned<String> = <start: @L> "\\displayname" <l:StringValue> <end: @R> => Spanned::new(l, start..end);
+DisplayName: Spanned<Symbol> = <start: @L> "\\displayname" <l:StringValue> <end: @R> => Spanned::new(ctx.intern(&l), Span(start, end));
 
 TermOrSeq: TermOrSeq = {
     <ante:Comma<Term>> "==>" <succ:Comma<Term>> => TermOrSeq::Seq(Seq { id: ctx.id(), ante, succ }),

@@ -58,7 +58,7 @@ create_visitor_traits! {
   seq: Seq,
   goal_specs: GoalSpecs,
   goal_spec: GoalSpec,
-  rule_sets: Spanned<Vec<Path>>,
+  rule_sets: Spanned<Vec<(NodeId, Path)>>,
   rule_set_decl: RuleSetDecl
 }
 
@@ -322,8 +322,9 @@ pub fn visit_goal_spec<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a GoalSpec) {
     }
 }
 
-pub fn visit_rule_sets<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Spanned<Vec<Path>>) {
-    for rs in &x.node {
+pub fn visit_rule_sets<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Spanned<Vec<(NodeId, Path)>>) {
+    for (id, rs) in &x.node {
+        v.visit_id(id);
         v.visit_path(rs);
     }
 }

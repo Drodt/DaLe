@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use dale_index::Idx;
 use dale_macros::newtype_index;
 use dale_util::symbol::Symbol;
@@ -90,12 +92,6 @@ pub struct Span {
     pub end: usize,
 }
 
-#[derive(Debug, Clone)]
-pub struct Spanned<T> {
-    pub node: T,
-    pub span: Span,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct Ident {
     pub span: Span,
@@ -104,6 +100,7 @@ pub struct Ident {
 
 pub struct Map<'ir> {
     pub file: File<'ir>,
+    pub items: HashMap<ItemId, &'ir Item<'ir>>,
 }
 
 #[derive(Debug, Clone)]
@@ -150,6 +147,7 @@ pub enum ItemKind<'ir> {
     Predicates(&'ir [PredicateDecl<'ir>]),
     Axioms(),
     Rules(&'ir [Rule<'ir>]),
+    RuleSets(&'ir [RuleSetDecl]),
 }
 
 pub type UsePath<'ir> = Path<'ir, PerNS<Option<Res>>>;
@@ -222,7 +220,7 @@ pub struct PredicateDecl<'ir> {
 pub struct SortRef<'ir> {
     pub id: IrId,
     pub span: Span,
-    pub name: Ident,
+    pub path: &'ir Path<'ir>,
     pub args: &'ir [GenericArg<'ir>],
 }
 
@@ -254,8 +252,8 @@ pub struct Term<'ir> {
 
 #[derive(Debug, Clone)]
 pub enum TermKind<'ir> {
-    Path(Path<'ir>),
-    Call(Path<'ir>, &'ir [Term<'ir>]),
+    Path(&'ir Path<'ir>, &'ir [GenericArg<'ir>]),
+    Call(&'ir Path<'ir>, &'ir [GenericArg<'ir>], &'ir [Term<'ir>]),
 }
 
 #[derive(Debug, Clone)]
@@ -263,11 +261,11 @@ pub struct Rule<'ir> {
     pub id: IrId,
     pub name: Ident,
     pub schema_vars: &'ir [SchemaVarDecl<'ir>],
-    pub assumes: Option<Spanned<TermOrSeq<'ir>>>,
-    pub find: Option<Spanned<TermOrSeq<'ir>>>,
+    pub assumes: Option<(Span, TermOrSeq<'ir>)>,
+    pub find: Option<(Span, TermOrSeq<'ir>)>,
     pub goal_specs: GoalSpecs<'ir>,
-    pub rule_sets: Option<Spanned<Vec<Ident>>>,
-    pub display_name: Option<Spanned<String>>,
+    pub rule_sets: Option<(Span, &'ir [Path<'ir>])>,
+    pub display_name: Option<Ident>,
     pub span: Span,
 }
 
@@ -301,9 +299,15 @@ pub enum GoalSpecs<'ir> {
 #[derive(Debug, Clone)]
 pub struct GoalSpec<'ir> {
     pub id: IrId,
-    pub name: Option<(String, Span)>,
+    pub name: Option<Ident>,
     pub replace_with: Option<TermOrSeq<'ir>>,
     pub add: Option<TermOrSeq<'ir>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuleSetDecl {
+    pub id: IrId,
+    pub name: Ident,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

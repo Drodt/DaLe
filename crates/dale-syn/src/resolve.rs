@@ -336,6 +336,7 @@ pub struct ScopeBuilder<'a, 'cx> {
     in_operator_context: bool,
     expected_ns: Namespace,
     theory_data: HashMap<DefId, TheoryData>,
+    active_id: Option<NodeId>,
 }
 
 impl<'a, 'cx> ScopeBuilder<'a, 'cx> {
@@ -347,6 +348,7 @@ impl<'a, 'cx> ScopeBuilder<'a, 'cx> {
             in_operator_context: false,
             expected_ns: Namespace::TheoryNS,
             theory_data: Default::default(),
+            active_id: None,
         }
     }
 
@@ -409,7 +411,9 @@ impl<'a, 'cx> ScopeBuilder<'a, 'cx> {
         path: &mut Vec<PathSegment>,
         uk: &UseTreeKind,
         td: &TheoryData,
+        id: NodeId,
         scopes: &mut PerNS<Vec<Scope>>,
+        import_res_map: &mut HashMap<NodeId, PerNS<Option<Res>>>,
     ) {
         let nss = [
             Namespace::OpNS,
@@ -419,6 +423,7 @@ impl<'a, 'cx> ScopeBuilder<'a, 'cx> {
         ];
         match uk {
             UseTreeKind::Simple(ident) => {
+                let mut import_res = PerNS::default();
                 for ns in nss {
                     if let Some(r) = td.scopes[ns].bindings.get(&path.last().unwrap().ident.node) {
                         let s = scopes[ns].last_mut().unwrap();
@@ -428,14 +433,16 @@ impl<'a, 'cx> ScopeBuilder<'a, 'cx> {
                             path.last().unwrap().ident.node
                         };
                         s.bindings.insert(ident, *r);
+                        import_res[ns] = Some(*r);
                     }
                 }
+                import_res_map.insert(id, import_res);
             }
             UseTreeKind::Nested { items, .. } => {
                 let orig_len = path.len();
-                for (t, _) in items {
+                for (t, id) in items {
                     path.extend(t.prefix.segments.iter().cloned());
-                    Self::add_imports(path, &t.kind, td, scopes);
+                    Self::add_imports(path, &t.kind, td, *id, scopes, import_res_map);
                     for _ in orig_len..path.len() {
                         path.pop();
                     }
@@ -500,6 +507,11 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         self.theory_data.insert(def_id, theory);
     }
 
+    fn visit_item(&mut self, x: &'ast raw::Item) {
+        self.active_id = Some(x.id);
+        visit_item(self, x);
+    }
+
     fn visit_item_kind(&mut self, x: &'ast raw::ItemKind) {
         if let raw::ItemKind::Operators(..) = &x {
             self.in_operator_context = true;
@@ -527,7 +539,7 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
     }
 
     fn visit_use_tree(&mut self, x: &'ast raw::UseTree) {
-        // Resolve theorx
+        // Resolve theory
         self.expected_ns = Namespace::TheoryNS;
         self.visit_path(&x.prefix);
         let Res::Def(DefKind::Theory, def_id) =
@@ -537,7 +549,15 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         };
         let td = &self.theory_data[&def_id];
         let uk = &x.kind;
-        Self::add_imports(&mut x.prefix.segments.to_vec(), uk, td, &mut self.scopes);
+        let id = self.active_id.take().unwrap();
+        Self::add_imports(
+            &mut x.prefix.segments.to_vec(),
+            uk,
+            td,
+            id,
+            &mut self.scopes,
+            &mut self.resolver.import_res_map,
+        );
     }
 
     fn visit_function_decl(&mut self, x: &'ast raw::FunctionDecl) {
@@ -644,7 +664,7 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         );
     }
 
-    fn visit_rule_sets(&mut self, x: &'ast raw::Spanned<Vec<raw::Path>>) {
+    fn visit_rule_sets(&mut self, x: &'ast raw::Spanned<Vec<(NodeId, raw::Path)>>) {
         let old_ns = self.expected_ns;
         self.expected_ns = Namespace::RuleSetNS;
         visit_rule_sets(self, x);
