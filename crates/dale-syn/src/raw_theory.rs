@@ -258,6 +258,7 @@ pub struct GoalSpec {
     pub name: Option<Ident>,
     pub replace_with: Option<TermOrSeq>,
     pub add: Option<TermOrSeq>,
+    pub span: Span,
 }
 
 pub type RuleSetDecls = Vec<RuleSetDecl>;

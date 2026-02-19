@@ -7,6 +7,7 @@ use dale_util::symbol::Symbol;
 use crate::resolve::PerNS;
 
 pub mod lower;
+pub mod visit;
 
 newtype_index! {
   #[orderable]
@@ -103,41 +104,41 @@ pub struct Map<'ir> {
     pub items: HashMap<ItemId, &'ir Item<'ir>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct File<'ir> {
     pub id: FileId,
     pub theories: &'ir [Theory<'ir>],
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Theory<'ir> {
     pub id: IrId,
     pub name: Ident,
     pub items: &'ir [ItemId],
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Path<'ir, R = Res> {
     pub span: Span,
     pub res: R,
     pub segments: &'ir [PathSegment],
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct PathSegment {
     pub id: IrId,
     pub ident: Ident,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Item<'ir> {
     pub id: ItemId,
     pub kind: ItemKind<'ir>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum ItemKind<'ir> {
     Use(&'ir UsePath<'ir>, UseKind),
     Operators(&'ir [OperatorDecl<'ir>]),
@@ -158,7 +159,7 @@ pub enum UseKind {
     Glob,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct FunctionDecl<'ir> {
     pub id: IrId,
     pub modifiers: FunctionModifiers,
@@ -176,7 +177,7 @@ pub struct FunctionModifiers {
     pub skolem: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct OperatorDecl<'ir> {
     pub id: IrId,
     pub rigid: bool,
@@ -187,7 +188,7 @@ pub struct OperatorDecl<'ir> {
     pub sort_ref: &'ir SortRef<'ir>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct SortDecl<'ir> {
     pub id: IrId,
     pub modifiers: SortModifiers,
@@ -203,10 +204,10 @@ pub struct SortModifiers {
     pub top: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct DataTypeDecls {}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct PredicateDecl<'ir> {
     pub id: IrId,
     pub rigid: bool,
@@ -216,7 +217,7 @@ pub struct PredicateDecl<'ir> {
     pub arg_sort_refs: &'ir [SortRef<'ir>],
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct SortRef<'ir> {
     pub id: IrId,
     pub span: Span,
@@ -224,39 +225,39 @@ pub struct SortRef<'ir> {
     pub args: &'ir [GenericArg<'ir>],
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum GenericArg<'ir> {
     Sort(&'ir SortRef<'ir>),
     Const(&'ir Term<'ir>, Span),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct GenericParam<'ir> {
     pub name: Ident,
     pub kind: GenericParamKind<'ir>,
     pub colon_span: Option<Span>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum GenericParamKind<'ir> {
     Sort,
     Const { sort: &'ir SortRef<'ir>, span: Span },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Term<'ir> {
     pub id: IrId,
     pub span: Span,
     pub kind: TermKind<'ir>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum TermKind<'ir> {
     Path(&'ir Path<'ir>, &'ir [GenericArg<'ir>]),
     Call(&'ir Path<'ir>, &'ir [GenericArg<'ir>], &'ir [Term<'ir>]),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Rule<'ir> {
     pub id: IrId,
     pub name: Ident,
@@ -269,7 +270,7 @@ pub struct Rule<'ir> {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct SchemaVarDecl<'ir> {
     pub id: IrId,
     pub span: Span,
@@ -277,34 +278,35 @@ pub struct SchemaVarDecl<'ir> {
     pub sort: &'ir SortRef<'ir>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum TermOrSeq<'ir> {
     Term(&'ir Term<'ir>),
     Seq(&'ir Seq<'ir>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Seq<'ir> {
     pub id: IrId,
     pub ante: &'ir [Term<'ir>],
     pub succ: &'ir [Term<'ir>],
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum GoalSpecs<'ir> {
     CloseGoal(IrId, Span),
     Specs(&'ir [GoalSpec<'ir>], Span),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct GoalSpec<'ir> {
     pub id: IrId,
     pub name: Option<Ident>,
     pub replace_with: Option<TermOrSeq<'ir>>,
     pub add: Option<TermOrSeq<'ir>>,
+    pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct RuleSetDecl {
     pub id: IrId,
     pub name: Ident,

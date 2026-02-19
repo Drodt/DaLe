@@ -5,6 +5,7 @@ use dale_util::symbol::{Interner, Symbol};
 
 use crate::{dl_theory::Token, raw_theory::NodeId};
 
+pub mod check;
 mod ctx;
 pub mod ir;
 pub mod raw_theory;
@@ -187,5 +188,6 @@ mod tests {
                 e.format(cx)
             )
         }
+        let _ir = ir::lower::lower(rusty, cx, resolver);
     }
 }

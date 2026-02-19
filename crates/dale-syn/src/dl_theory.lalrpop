@@ -340,23 +340,26 @@ GoalSpecs: GoalSpecs = {
 }
 
 GoalSpec: GoalSpec = {
-    <name:GoalSpecName?> "\\replacewith" "(" <t:TermOrSeq> ")" => GoalSpec {
+    <start: @L> <name:GoalSpecName?> "\\replacewith" "(" <t:TermOrSeq> ")" <end: @R> => GoalSpec {
         id: ctx.id(),
         name,
         replace_with: Some(t),
-        add: None
+        add: None,
+        span: Span(start, end)
     },
-    <name:GoalSpecName?> "\\replacewith" "(" <r:TermOrSeq> ")" "\\add" "(" <a:TermOrSeq> ")" => GoalSpec {
+    <start: @L> <name:GoalSpecName?> "\\replacewith" "(" <r:TermOrSeq> ")" "\\add" "(" <a:TermOrSeq> ")" <end: @R> => GoalSpec {
         id: ctx.id(),
         name,
         replace_with: Some(r),
-        add: Some(a)
+        add: Some(a),
+        span: Span(start, end)
     },
-    <name:GoalSpecName?> "\\add" "(" <a:TermOrSeq> ")" => GoalSpec {
+    <start: @L> <name:GoalSpecName?> "\\add" "(" <a:TermOrSeq> ")" <end: @R> => GoalSpec {
         id: ctx.id(),
         name,
         replace_with: None,
-        add: Some(a)
+        add: Some(a),
+        span: Span(start, end)
     }
 }
 
