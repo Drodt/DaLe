@@ -99,9 +99,40 @@ pub struct Ident {
     pub name: Symbol,
 }
 
+#[derive(Debug, Clone)]
 pub struct Map<'ir> {
     pub file: File<'ir>,
     pub items: HashMap<ItemId, &'ir Item<'ir>>,
+    pub defs: HashMap<DefId, Def<'ir>>,
+}
+
+impl<'ir> Map<'ir> {
+    pub fn get_def(&self, def_id: DefId) -> Def<'ir> {
+        self.defs[&def_id]
+    }
+
+    pub fn get_sort(&self, def_id: DefId) -> SortDecl<'ir> {
+        self.get_def(def_id).expect_sort_decl()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Def<'ir> {
+    SortDecl(SortDecl<'ir>),
+    OpDecl(OperatorDecl<'ir>),
+    FnDecl(FunctionDecl<'ir>),
+    PredDecl(PredicateDecl<'ir>),
+    SchemaVar(SchemaVarDecl<'ir>),
+    GenParam(GenericParam<'ir>),
+}
+
+impl<'ir> Def<'ir> {
+    pub fn expect_sort_decl(&self) -> SortDecl<'ir> {
+        match self {
+            Self::SortDecl(s) => *s,
+            _ => panic!("Expected sort decl"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

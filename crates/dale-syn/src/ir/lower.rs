@@ -16,6 +16,7 @@ pub fn lower<'ir>(file: raw::File, cx: Ctx<'ir>, resolver: Resolver<'ir>) -> Map
     Map {
         file,
         items: lcx.items,
+        defs: lcx.defs,
     }
 }
 
@@ -26,6 +27,7 @@ struct LowerCtx<'ir> {
     current_ir_id: IrId,
     node_id_to_ir_id: HashMap<NodeId, IrId>,
     items: HashMap<ItemId, &'ir Item<'ir>>,
+    defs: HashMap<DefId, Def<'ir>>,
 }
 
 impl<'ir> LowerCtx<'ir> {
@@ -37,6 +39,7 @@ impl<'ir> LowerCtx<'ir> {
             current_ir_id: IrId::ZERO,
             node_id_to_ir_id: HashMap::default(),
             items: HashMap::default(),
+            defs: HashMap::default(),
         }
     }
 }
