@@ -10,14 +10,18 @@ use crate::{
     resolve::Resolver,
 };
 
-pub fn lower<'ir>(file: raw::File, cx: Ctx<'ir>, resolver: Resolver<'ir>) -> Map<'ir> {
+pub fn lower<'ir>(file: raw::File, cx: Ctx<'ir>, resolver: Resolver<'ir>) -> (Map<'ir>, Vec<Span>) {
     let mut lcx = LowerCtx::new(cx, resolver);
     let file = lcx.lower_file(file);
-    Map {
-        file,
-        items: lcx.items,
-        defs: lcx.defs,
-    }
+    (
+        Map {
+            file,
+            items: lcx.items,
+            defs: lcx.defs,
+            sorts: HashMap::default(),
+        },
+        lcx.errors,
+    )
 }
 
 struct LowerCtx<'ir> {
@@ -28,6 +32,7 @@ struct LowerCtx<'ir> {
     node_id_to_ir_id: HashMap<NodeId, IrId>,
     items: HashMap<ItemId, &'ir Item<'ir>>,
     defs: HashMap<DefId, Def<'ir>>,
+    errors: Vec<Span>,
 }
 
 impl<'ir> LowerCtx<'ir> {
@@ -40,6 +45,7 @@ impl<'ir> LowerCtx<'ir> {
             node_id_to_ir_id: HashMap::default(),
             items: HashMap::default(),
             defs: HashMap::default(),
+            errors: Default::default(),
         }
     }
 }
@@ -303,7 +309,7 @@ impl<'ir> LowerCtx<'ir> {
             .arena
             .alloc_from_iter(o.arg_sorts.iter().map(|s| self.lower_sort_ref(s)));
         let sort_ref = self.arena.alloc(self.lower_sort_ref(&o.sort));
-        OperatorDecl {
+        let od = OperatorDecl {
             id,
             rigid: o.modifiers.rigid,
             name,
@@ -311,11 +317,13 @@ impl<'ir> LowerCtx<'ir> {
             where_to_bind,
             arg_sort_refs,
             sort_ref,
-        }
+        };
+        self.defs.insert(id, Def::OpDecl(od));
+        od
     }
 
     fn lower_function_decl(&mut self, o: &raw::FunctionDecl) -> FunctionDecl<'ir> {
-        let id = self.lower_node_id(o.id);
+        let id = self.resolver.def_id(o.id);
         let name = self.lower_ident(&o.name);
         let params = self
             .arena
@@ -325,7 +333,7 @@ impl<'ir> LowerCtx<'ir> {
             .arena
             .alloc_from_iter(o.arg_sorts.iter().map(|s| self.lower_sort_ref(s)));
         let sort_ref = self.arena.alloc(self.lower_sort_ref(&o.sort));
-        FunctionDecl {
+        let fd = FunctionDecl {
             id,
             modifiers: self.lower_fn_modifiers(o.modifiers),
             name,
@@ -333,7 +341,9 @@ impl<'ir> LowerCtx<'ir> {
             where_to_bind,
             arg_sort_refs,
             sort_ref,
-        }
+        };
+        self.defs.insert(id, Def::FnDecl(fd));
+        fd
     }
 
     fn lower_pred_decl(&mut self, o: &raw::PredicateDecl) -> PredicateDecl<'ir> {
@@ -346,14 +356,16 @@ impl<'ir> LowerCtx<'ir> {
         let arg_sort_refs = self
             .arena
             .alloc_from_iter(o.arg_sorts.iter().map(|s| self.lower_sort_ref(s)));
-        PredicateDecl {
+        let pd = PredicateDecl {
             id,
             rigid: o.rigid,
             name,
             params,
             where_to_bind,
             arg_sort_refs,
-        }
+        };
+        self.defs.insert(id, Def::PredDecl(pd));
+        pd
     }
 
     fn lower_sort_decl(&mut self, s: &raw::SortDecl) -> SortDecl<'ir> {
@@ -372,14 +384,16 @@ impl<'ir> LowerCtx<'ir> {
                     as &[SortRef],
             )
         });
-        SortDecl {
+        let sd = SortDecl {
             id,
             modifiers,
             span,
             name,
             params,
             extends,
-        }
+        };
+        self.defs.insert(id, Def::SortDecl(sd));
+        sd
     }
 
     fn lower_rule(&mut self, r: &raw::Rule) -> Rule<'ir> {
@@ -440,12 +454,14 @@ impl<'ir> LowerCtx<'ir> {
         let name = self.lower_ident(&p.name);
         let kind = self.lower_generic_param_kind(&p.kind);
         let colon_span = p.colon_span.map(|s| self.lower_span(&s));
-        GenericParam {
+        let gp = GenericParam {
             id,
             name,
             kind,
             colon_span,
-        }
+        };
+        self.defs.insert(id, Def::GenParam(gp));
+        gp
     }
 
     fn lower_generic_param_kind(&mut self, k: &raw::GenericParamKind) -> GenericParamKind<'ir> {
@@ -497,7 +513,10 @@ impl<'ir> LowerCtx<'ir> {
 
     fn lower_path(&mut self, path: &raw::Path, id: NodeId) -> Path<'ir> {
         let span = self.lower_span(&path.span);
-        let res = self.resolver.get_res(id).unwrap_or(Res::Err);
+        let res = self.resolver.get_res(id).unwrap_or_else(|| {
+            self.errors.push(span);
+            Res::Err
+        });
         let segments = self
             .arena
             .alloc_from_iter(path.segments.iter().map(|s| self.lower_path_segment(s)));
@@ -602,12 +621,14 @@ impl<'ir> LowerCtx<'ir> {
         let span = self.lower_span(&sv.span);
         let name = self.lower_ident(&sv.name);
         let sort = self.arena.alloc(self.lower_sort_ref(&sv.sort));
-        SchemaVarDecl {
+        let sv = SchemaVarDecl {
             id,
             span,
             name,
             sort,
-        }
+        };
+        self.defs.insert(id, Def::SchemaVar(sv));
+        sv
     }
 
     fn lower_rule_set_decl(&mut self, r: &raw::RuleSetDecl) -> RuleSetDecl {

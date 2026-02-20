@@ -440,6 +440,7 @@
 }
 
 \theory RFOL {
+  \use Prop::*;
   \use FOL::*;
   \use Bool::*;
   \use IfThenElse::*;

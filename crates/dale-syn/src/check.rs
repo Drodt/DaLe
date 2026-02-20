@@ -4,25 +4,44 @@ use dale_util::arena::DroplessArena;
 
 use crate::ir::{
     self, Def, DefId, DefKind, FunctionDecl, GenericArg, GenericParam, GenericParamKind, IrId, Map,
-    OperatorDecl, PredicateDecl, Res, SortDecl, SortRef, Span, Term, TermKind,
-    visit::{Visit, visit_term},
+    OperatorDecl, PredicateDecl, Res, SchemaVarDecl, SortDecl, SortModifiers, SortRef, Span, Term,
+    TermKind,
+    visit::{Visit, visit_item, visit_term},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Sort<'ir> {
     pub def_id: DefId,
+    pub modifiers: SortModifiers,
     pub args: &'ir [GenArg<'ir>],
+    pub extends: Option<&'ir [Sort<'ir>]>,
 }
 
 impl<'ir> Sort<'ir> {
     pub fn sub_sort(&self, s: &Sort<'ir>) -> bool {
-        todo!()
+        if s.modifiers.top || self == s {
+            return true;
+        }
+        match self.extends {
+            Some(e) => e.iter().any(|sort| sort.sub_sort(s)),
+            None => false,
+        }
     }
 }
 
 impl<'ir> Sort<'ir> {
-    pub fn new(def_id: DefId, args: &'ir [GenArg<'ir>]) -> Self {
-        Self { def_id, args }
+    pub fn new(
+        def_id: DefId,
+        args: &'ir [GenArg<'ir>],
+        modifiers: SortModifiers,
+        extends: Option<&'ir [Sort<'ir>]>,
+    ) -> Self {
+        Self {
+            def_id,
+            args,
+            modifiers,
+            extends,
+        }
     }
 }
 
@@ -32,8 +51,13 @@ pub enum GenArg<'ir> {
     Term(Term<'ir>),
 }
 
-pub fn check_ir<'ir>(map: Map<'ir>) {}
+pub fn check_ir<'ir>(map: &'ir mut Map<'ir>, arena: &'ir DroplessArena) -> Vec<CheckErr> {
+    let mut checker = Checker::new(map, arena);
+    checker.visit_file(&map.file);
+    checker.errors
+}
 
+#[derive(Debug, Clone, Copy)]
 pub enum CheckErr {
     IncorrentNumberOfGenArgs(IrId, DefId),
     IncorrentNumberOfArgs(IrId, DefId),
@@ -42,8 +66,38 @@ pub enum CheckErr {
     CallArgNotSubsort(IrId, DefId, usize),
 }
 
+impl CheckErr {
+    pub fn format(&self) -> String {
+        match self {
+            CheckErr::IncorrentNumberOfGenArgs(ir_id, def_id) => {
+                format!("Incorrect number of generic arguments.")
+            }
+            CheckErr::IncorrentNumberOfArgs(ir_id, def_id) => {
+                format!("Incorrect number of arguments.")
+            }
+            CheckErr::ArgKindMismatch(ir_id, def_id, _) => format!("Generic arguement mismatch"),
+            CheckErr::ConstArgNotSubsort(ir_id, def_id, _) => {
+                format!("Const generic argument is not subsort of parameter sort")
+            }
+            CheckErr::CallArgNotSubsort(ir_id, def_id, _) => {
+                format!("Call argument is not subsort")
+            }
+        }
+    }
+
+    pub fn id(&self) -> IrId {
+        match self {
+            CheckErr::IncorrentNumberOfGenArgs(ir_id, ..) => *ir_id,
+            CheckErr::IncorrentNumberOfArgs(ir_id, ..) => *ir_id,
+            CheckErr::ArgKindMismatch(ir_id, ..) => *ir_id,
+            CheckErr::ConstArgNotSubsort(ir_id, ..) => *ir_id,
+            CheckErr::CallArgNotSubsort(ir_id, ..) => *ir_id,
+        }
+    }
+}
+
 struct Checker<'ir> {
-    map: Map<'ir>,
+    map: &'ir Map<'ir>,
     arena: &'ir DroplessArena,
     ir_id_to_sort: HashMap<IrId, Sort<'ir>>,
     def_id_args_to_sort: HashMap<(DefId, &'ir [GenArg<'ir>]), Sort<'ir>>,
@@ -51,6 +105,16 @@ struct Checker<'ir> {
 }
 
 impl<'ir> Checker<'ir> {
+    fn new(map: &'ir Map<'ir>, arena: &'ir DroplessArena) -> Self {
+        Self {
+            map,
+            arena,
+            ir_id_to_sort: Default::default(),
+            def_id_args_to_sort: Default::default(),
+            errors: Default::default(),
+        }
+    }
+
     fn term_sort(&mut self, t: &'ir Term<'ir>) -> Sort<'ir> {
         if let Some(s) = self.ir_id_to_sort.get(&t.id) {
             return *s;
@@ -61,10 +125,14 @@ impl<'ir> Checker<'ir> {
             TermKind::Call(path, generic_args, terms) => (path, generic_args, Some(terms)),
         };
         let Res::Def(_, def_id) = path.res else {
-            panic!()
+            panic!("{t:?}")
         };
         let (params, sort_ref, arg_sort_refs) = match self.map.get_def(def_id) {
-            Def::SchemaVar(d) => (None, Some(d.sort), None),
+            Def::SchemaVar(SchemaVarDecl { sort, .. })
+            | Def::GenParam(GenericParam {
+                kind: GenericParamKind::Const { sort, .. },
+                ..
+            }) => (None, Some(sort), None),
             Def::FnDecl(FunctionDecl {
                 params,
                 sort_ref,
@@ -82,7 +150,7 @@ impl<'ir> Checker<'ir> {
                 arg_sort_refs,
                 ..
             }) => (Some(params), None, Some(arg_sort_refs)),
-            _ => panic!("Expected operator"),
+            d => panic!("Expected operator, got {d:?}"),
         };
         let args = self.convert_args(args);
         if let Some(params) = params {
@@ -91,9 +159,18 @@ impl<'ir> Checker<'ir> {
 
         match (subs, arg_sort_refs) {
             (None, None) => {}
-            (Some(_), None) | (None, Some(_)) => self
-                .errors
-                .push(CheckErr::IncorrentNumberOfArgs(t.id, def_id)),
+            (Some(s), None) => {
+                if !s.is_empty() {
+                    self.errors
+                        .push(CheckErr::IncorrentNumberOfArgs(t.id, def_id))
+                }
+            }
+            (None, Some(a)) => {
+                if !a.is_empty() {
+                    self.errors
+                        .push(CheckErr::IncorrentNumberOfArgs(t.id, def_id))
+                }
+            }
             (Some(subs), Some(srs)) => {
                 if subs.len() != srs.len() {
                     self.errors
@@ -147,20 +224,28 @@ impl<'ir> Checker<'ir> {
             panic!("Encountered error")
         };
         let args = self.convert_args(r.args);
-        match self.def_id_args_to_sort.entry((def_id, args)) {
-            Entry::Occupied(e) => *e.get(),
-            Entry::Vacant(e) => {
-                let decl = self.map.get_sort(def_id);
-                if args.len() != decl.params.len() {
-                    self.errors
-                        .push(CheckErr::IncorrentNumberOfGenArgs(r.id, def_id));
-                }
-                let result = Sort::new(def_id, args);
-                e.insert(result);
-                self.check_generic_args(r.id, def_id, args, decl.params);
-                result
-            }
+        if let Some(e) = self.def_id_args_to_sort.get(&(def_id, args)) {
+            return *e;
         }
+
+        let decl = self.map.get_sort(def_id);
+        if args.len() != decl.params.len() {
+            self.errors
+                .push(CheckErr::IncorrentNumberOfGenArgs(r.id, def_id));
+        }
+        let extends = if let Some((_, e)) = decl.extends {
+            Some(
+                self.arena
+                    .alloc_from_iter(e.iter().map(|s| self.ref_to_sort(s)))
+                    as &[Sort<'ir>],
+            )
+        } else {
+            None
+        };
+        let result = Sort::new(def_id, args, decl.modifiers, extends);
+        self.def_id_args_to_sort.insert((def_id, args), result);
+        self.check_generic_args(r.id, def_id, args, decl.params);
+        result
     }
 
     fn convert_args(&mut self, args: &'ir [GenericArg<'ir>]) -> &'ir [GenArg<'ir>] {
@@ -175,5 +260,9 @@ impl<'ir> Visit<'ir> for Checker<'ir> {
     fn visit_term(&mut self, x: &'ir Term<'ir>) {
         visit_term(self, x);
         self.term_sort(x);
+    }
+
+    fn visit_item_id(&mut self, x: &'ir ir::ItemId) {
+        self.visit_item(self.map.items[x]);
     }
 }

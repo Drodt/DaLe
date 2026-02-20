@@ -6,7 +6,7 @@ use indexmap::IndexMap;
 
 use crate::{
     ctx::Ctx,
-    ir::{DefId, DefKind, LocalDefId, Res},
+    ir::{DefId, DefKind, LocalDefId, Res, TermKind},
     raw_theory::{
         self as raw, File, Ident, NodeId, PathSegment, Span, UseTreeKind, Visit, visit_file,
         visit_function_decl, visit_generic_param, visit_item, visit_item_kind,
@@ -27,6 +27,7 @@ pub fn resolve<'cx>(cx: Ctx<'cx>, file: &File) -> Resolver<'cx> {
 pub enum ResolveErr {
     DuplicateName(Symbol, Span),
     NotFound(Symbol, Namespace, Span),
+    NoRes(Span),
 }
 
 impl ResolveErr {
@@ -45,6 +46,7 @@ impl ResolveErr {
                     ns
                 )
             }
+            ResolveErr::NoRes(_) => format!("No resolution found"),
         }
     }
 
@@ -52,6 +54,7 @@ impl ResolveErr {
         match self {
             ResolveErr::DuplicateName(_, span) => span,
             ResolveErr::NotFound(_, _, span) => span,
+            ResolveErr::NoRes(span) => span,
         }
     }
 }
@@ -645,6 +648,15 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         let old_ns = self.expected_ns;
         self.expected_ns = Namespace::OpNS;
         visit_term(self, x);
+        let path = match &x.kind {
+            raw::TermKind::Path(p) => p,
+            raw::TermKind::Call(p, ..) => p,
+            raw::TermKind::ParametricPath(path, ..) => path,
+            raw::TermKind::ParametricCall(path, ..) => path,
+        };
+        let last_seg_id = path.segments.last().unwrap().id;
+        let res = self.resolver.resolved[&last_seg_id];
+        self.resolver.resolved.insert(x.id, res);
         self.expected_ns = old_ns;
     }
 
@@ -653,6 +665,15 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         self.expected_ns = Namespace::SortNS;
         visit_sort(self, x);
         self.expected_ns = old_ns;
+
+        let path = match &x.kind {
+            raw::SortKind::Simple(path) => path,
+            raw::SortKind::Parametric(path, ..) => path,
+        };
+        self.resolver.resolved.insert(
+            x.id,
+            self.resolver.resolved[&path.segments.last().unwrap().id],
+        );
     }
 
     fn visit_generic_param(&mut self, x: &'ast raw::GenericParam) {
@@ -673,6 +694,12 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         self.expected_ns = Namespace::RuleSetNS;
         visit_rule_sets(self, x);
         self.expected_ns = old_ns;
+        for (id, path) in x.node.iter() {
+            self.resolver.resolved.insert(
+                *id,
+                self.resolver.resolved[&path.segments.last().unwrap().id],
+            );
+        }
     }
 
     fn visit_path(&mut self, x: &'ast raw::Path) {

@@ -4,7 +4,7 @@ use dale_index::Idx;
 use dale_macros::newtype_index;
 use dale_util::symbol::Symbol;
 
-use crate::resolve::PerNS;
+use crate::{check::Sort, resolve::PerNS};
 
 pub mod lower;
 pub mod visit;
@@ -104,6 +104,7 @@ pub struct Map<'ir> {
     pub file: File<'ir>,
     pub items: HashMap<ItemId, &'ir Item<'ir>>,
     pub defs: HashMap<DefId, Def<'ir>>,
+    pub sorts: HashMap<IrId, Sort<'ir>>,
 }
 
 impl<'ir> Map<'ir> {
@@ -192,7 +193,7 @@ pub enum UseKind {
 
 #[derive(Debug, Clone, Copy)]
 pub struct FunctionDecl<'ir> {
-    pub id: IrId,
+    pub id: DefId,
     pub modifiers: FunctionModifiers,
     pub name: Ident,
     pub params: &'ir [GenericParam<'ir>],
@@ -229,7 +230,7 @@ pub struct SortDecl<'ir> {
     pub extends: Option<(Span, &'ir [SortRef<'ir>])>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SortModifiers {
     pub meta: bool,
     pub top: bool,

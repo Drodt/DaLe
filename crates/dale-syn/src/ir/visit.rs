@@ -183,7 +183,7 @@ pub fn visit_operator_decl<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Operator
 }
 
 pub fn visit_function_decl<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a FunctionDecl<'a>) {
-    v.visit_id(&x.id);
+    v.visit_def_id(&x.id);
     v.visit_ident(&x.name);
     for p in x.params {
         v.visit_generic_param(p);

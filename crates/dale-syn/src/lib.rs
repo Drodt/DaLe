@@ -188,7 +188,28 @@ mod tests {
                 e.format(cx)
             )
         }
-        let ir = ir::lower::lower(rusty, cx, resolver);
-        check::check_ir(ir);
+        let (mut ir, errors) = ir::lower::lower(rusty, cx, resolver);
+        if !errors.is_empty() {
+            let e = &errors[0];
+            let start = e.start;
+            let pos = loc_to_pos(&input, start);
+            panic!(
+                "{}:{} '{}': {}",
+                pos.line,
+                pos.column,
+                get_line(&input, start),
+                "No resolution"
+            )
+        }
+        let errors = check::check_ir(&mut ir.clone(), &cx.ir_arena);
+        if !errors.is_empty() {
+            let e = &errors[0];
+            let id = e.id();
+            for i in ir.items {
+                println!("{:?}", i.1)
+            }
+            println!("{}", get_line(&input, 837));
+            panic!("{id:?} {}", e.format());
+        }
     }
 }
