@@ -20,7 +20,6 @@ pub fn lower<'ir>(file: raw::File, cx: Ctx<'ir>, resolver: Resolver<'ir>) -> Map
 }
 
 struct LowerCtx<'ir> {
-    cx: Ctx<'ir>,
     resolver: Resolver<'ir>,
     arena: &'ir DroplessArena,
     current_file_id: FileId,
@@ -32,7 +31,6 @@ struct LowerCtx<'ir> {
 impl<'ir> LowerCtx<'ir> {
     fn new(cx: Ctx<'ir>, resolver: Resolver<'ir>) -> Self {
         Self {
-            cx,
             resolver,
             arena: cx.ir_arena,
             current_file_id: FileId::ZERO,
@@ -82,7 +80,7 @@ impl<'ir> LowerCtx<'ir> {
     }
 
     fn lower_theory(&mut self, theory: &raw::Theory) -> Theory<'ir> {
-        let id = self.lower_node_id(theory.id);
+        let id = self.resolver.def_id(theory.id);
         let name = self.lower_ident(&theory.name);
         let items = self
             .arena
@@ -292,7 +290,7 @@ impl<'ir> LowerCtx<'ir> {
     }
 
     fn lower_operator_decl(&mut self, o: &raw::FunctionDecl) -> OperatorDecl<'ir> {
-        let id = self.lower_node_id(o.id);
+        let id = self.resolver.def_id(o.id);
         let name = self.lower_ident(&o.name);
         let params = self
             .arena
@@ -336,7 +334,7 @@ impl<'ir> LowerCtx<'ir> {
     }
 
     fn lower_pred_decl(&mut self, o: &raw::PredicateDecl) -> PredicateDecl<'ir> {
-        let id = self.lower_node_id(o.id);
+        let id = self.resolver.def_id(o.id);
         let name = self.lower_ident(&o.name);
         let params = self
             .arena
@@ -356,7 +354,7 @@ impl<'ir> LowerCtx<'ir> {
     }
 
     fn lower_sort_decl(&mut self, s: &raw::SortDecl) -> SortDecl<'ir> {
-        let id = self.lower_node_id(s.id);
+        let id = self.resolver.def_id(s.id);
         let modifiers = self.lower_sort_modifiers(s.modifiers);
         let span = self.lower_span(&s.span);
         let name = self.lower_ident(&s.name);
@@ -382,7 +380,7 @@ impl<'ir> LowerCtx<'ir> {
     }
 
     fn lower_rule(&mut self, r: &raw::Rule) -> Rule<'ir> {
-        let id = self.lower_node_id(r.id);
+        let id = self.resolver.def_id(r.id);
         let name = self.lower_ident(&r.name);
         let schema_vars = self
             .arena
@@ -435,10 +433,12 @@ impl<'ir> LowerCtx<'ir> {
     }
 
     fn lower_generic_param(&mut self, p: &raw::GenericParam) -> GenericParam<'ir> {
+        let id = self.resolver.def_id(p.id);
         let name = self.lower_ident(&p.name);
         let kind = self.lower_generic_param_kind(&p.kind);
         let colon_span = p.colon_span.map(|s| self.lower_span(&s));
         GenericParam {
+            id,
             name,
             kind,
             colon_span,
@@ -595,7 +595,7 @@ impl<'ir> LowerCtx<'ir> {
     }
 
     fn lower_schema_var(&mut self, sv: &raw::SchemaVarDecl) -> SchemaVarDecl<'ir> {
-        let id = self.lower_node_id(sv.id);
+        let id = self.resolver.def_id(sv.id);
         let span = self.lower_span(&sv.span);
         let name = self.lower_ident(&sv.name);
         let sort = self.arena.alloc(self.lower_sort_ref(&sv.sort));
@@ -608,7 +608,7 @@ impl<'ir> LowerCtx<'ir> {
     }
 
     fn lower_rule_set_decl(&mut self, r: &raw::RuleSetDecl) -> RuleSetDecl {
-        let id = self.lower_node_id(r.id);
+        let id = self.resolver.def_id(r.id);
         let name = self.lower_ident(&r.name);
         RuleSetDecl { id, name }
     }

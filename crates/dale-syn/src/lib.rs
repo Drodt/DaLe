@@ -188,6 +188,7 @@ mod tests {
                 e.format(cx)
             )
         }
-        let _ir = ir::lower::lower(rusty, cx, resolver);
+        let ir = ir::lower::lower(rusty, cx, resolver);
+        check::check_ir(ir);
     }
 }

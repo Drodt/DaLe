@@ -202,6 +202,10 @@ impl<'cx> Resolver<'cx> {
     pub fn get_import_res(&self, id: NodeId) -> PerNS<Option<Res>> {
         self.import_res_map[&id]
     }
+
+    pub fn def_id(&self, id: NodeId) -> DefId {
+        self.node_id_to_def_id[&id].to_def_id()
+    }
 }
 
 fn collect_defs<'cx>(cx: Ctx<'cx>, resolver: &mut Resolver<'cx>, file: &File) {

@@ -46,6 +46,7 @@ pub trait Visitable<'ir> {
 }
 
 create_visitor_traits! {
+  def_id: DefId,
   file: File<'ir>,
   file_id: FileId,
   theory: Theory<'ir>,
@@ -84,10 +85,14 @@ pub fn visit_file<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a File) {
     }
 }
 
+pub fn visit_def_id<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a DefId) {
+    v.visit_file_id(&x.file);
+}
+
 pub fn visit_file_id<'a, V: Visit<'a> + ?Sized>(_: &mut V, _: &'a FileId) {}
 
 pub fn visit_theory<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Theory) {
-    v.visit_id(&x.id);
+    v.visit_def_id(&x.id);
     v.visit_ident(&x.name);
     for i in x.items {
         v.visit_item_id(i);
@@ -166,7 +171,7 @@ pub fn visit_use_path<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a UsePath<'a>) 
 }
 
 pub fn visit_operator_decl<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a OperatorDecl<'a>) {
-    v.visit_id(&x.id);
+    v.visit_def_id(&x.id);
     v.visit_ident(&x.name);
     for p in x.params {
         v.visit_generic_param(p);
@@ -190,7 +195,7 @@ pub fn visit_function_decl<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Function
 }
 
 pub fn visit_sort_decl<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a SortDecl<'a>) {
-    v.visit_id(&x.id);
+    v.visit_def_id(&x.id);
     v.visit_ident(&x.name);
     for p in x.params {
         v.visit_generic_param(p);
@@ -203,7 +208,7 @@ pub fn visit_sort_decl<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a SortDecl<'a>
 }
 
 pub fn visit_predicate_decl<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a PredicateDecl<'a>) {
-    v.visit_id(&x.id);
+    v.visit_def_id(&x.id);
     v.visit_ident(&x.name);
     for p in x.params {
         v.visit_generic_param(p);
@@ -229,6 +234,7 @@ pub fn visit_generic_arg<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a GenericArg
 }
 
 pub fn visit_generic_param<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a GenericParam<'a>) {
+    v.visit_def_id(&x.id);
     v.visit_ident(&x.name);
     v.visit_generic_param_kind(&x.kind);
 }
@@ -265,7 +271,7 @@ pub fn visit_term_kind<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a TermKind<'a>
 }
 
 pub fn visit_rule<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Rule<'a>) {
-    v.visit_id(&x.id);
+    v.visit_def_id(&x.id);
     v.visit_ident(&x.name);
     for sv in x.schema_vars {
         v.visit_schema_var_decl(sv);
@@ -286,7 +292,7 @@ pub fn visit_rule<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Rule<'a>) {
 }
 
 pub fn visit_schema_var_decl<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a SchemaVarDecl<'a>) {
-    v.visit_id(&x.id);
+    v.visit_def_id(&x.id);
     v.visit_ident(&x.name);
     v.visit_sort_ref(x.sort);
 }
@@ -339,6 +345,6 @@ pub fn visit_rule_sets<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a [Path<'a>]) 
 }
 
 pub fn visit_rule_set_decl<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a RuleSetDecl) {
-    v.visit_id(&x.id);
+    v.visit_def_id(&x.id);
     v.visit_ident(&x.name);
 }
