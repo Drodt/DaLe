@@ -6,7 +6,7 @@ use crate::ir::{
     self, Def, DefId, DefKind, FunctionDecl, GenericArg, GenericParam, GenericParamKind, IrId, Map,
     OperatorDecl, PredicateDecl, Res, SchemaVarDecl, SortDecl, SortModifiers, SortRef, Span, Term,
     TermKind,
-    visit::{Visit, visit_item, visit_term},
+    visit::{Visit, visit_item, visit_sort_decl, visit_term},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -64,6 +64,7 @@ pub enum CheckErr {
     ArgKindMismatch(IrId, DefId, usize),
     ConstArgNotSubsort(IrId, DefId, usize),
     CallArgNotSubsort(IrId, DefId, usize),
+    MultipleFormulaSorts(DefId, DefId),
 }
 
 impl CheckErr {
@@ -82,16 +83,20 @@ impl CheckErr {
             CheckErr::CallArgNotSubsort(ir_id, def_id, _) => {
                 format!("Call argument is not subsort")
             }
+            CheckErr::MultipleFormulaSorts(new_, old) => {
+                format!("Multiple formula sort definitions")
+            }
         }
     }
 
-    pub fn id(&self) -> IrId {
+    pub fn id(&self) -> Option<IrId> {
         match self {
-            CheckErr::IncorrentNumberOfGenArgs(ir_id, ..) => *ir_id,
-            CheckErr::IncorrentNumberOfArgs(ir_id, ..) => *ir_id,
-            CheckErr::ArgKindMismatch(ir_id, ..) => *ir_id,
-            CheckErr::ConstArgNotSubsort(ir_id, ..) => *ir_id,
-            CheckErr::CallArgNotSubsort(ir_id, ..) => *ir_id,
+            CheckErr::IncorrentNumberOfGenArgs(ir_id, ..) => Some(*ir_id),
+            CheckErr::IncorrentNumberOfArgs(ir_id, ..) => Some(*ir_id),
+            CheckErr::ArgKindMismatch(ir_id, ..) => Some(*ir_id),
+            CheckErr::ConstArgNotSubsort(ir_id, ..) => Some(*ir_id),
+            CheckErr::CallArgNotSubsort(ir_id, ..) => Some(*ir_id),
+            _ => None,
         }
     }
 }
@@ -101,6 +106,7 @@ struct Checker<'ir> {
     arena: &'ir DroplessArena,
     ir_id_to_sort: HashMap<IrId, Sort<'ir>>,
     def_id_args_to_sort: HashMap<(DefId, &'ir [GenArg<'ir>]), Sort<'ir>>,
+    formula_sort: Option<SortDecl<'ir>>,
     errors: Vec<CheckErr>,
 }
 
@@ -111,6 +117,7 @@ impl<'ir> Checker<'ir> {
             arena,
             ir_id_to_sort: Default::default(),
             def_id_args_to_sort: Default::default(),
+            formula_sort: Default::default(),
             errors: Default::default(),
         }
     }
@@ -257,6 +264,29 @@ impl<'ir> Checker<'ir> {
 }
 
 impl<'ir> Visit<'ir> for Checker<'ir> {
+    fn visit_sort_decl(&mut self, x: &'ir SortDecl<'ir>) {
+        if x.modifiers.formula {
+            if let Some(old) = self.formula_sort {
+                self.errors
+                    .push(CheckErr::MultipleFormulaSorts(x.id, old.id));
+            }
+            self.formula_sort = Some(*x);
+        }
+        visit_sort_decl(self, x);
+    }
+
+    fn visit_operator_decl(&mut self, x: &'ir OperatorDecl<'ir>) {
+        // Must use formula sort as an arg; otherwise, why not just a function/predicate?
+    }
+
+    fn visit_predicate_decl(&mut self, x: &'ir PredicateDecl<'ir>) {
+        // Must not use formula as arg; should be an operator, then
+    }
+
+    fn visit_function_decl(&mut self, x: &'ir FunctionDecl<'ir>) {
+        // Must not use formula as arg or result; should be an operator, then
+    }
+
     fn visit_term(&mut self, x: &'ir Term<'ir>) {
         visit_term(self, x);
         self.term_sort(x);

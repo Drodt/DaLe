@@ -232,6 +232,7 @@ pub struct SortDecl<'ir> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SortModifiers {
+    pub formula: bool,
     pub meta: bool,
     pub top: bool,
 }

@@ -141,6 +141,7 @@ pub struct SortDecl {
 
 #[derive(Debug, Clone, Copy)]
 pub struct SortModifiers {
+    pub formula: bool,
     pub meta: bool,
     pub top: bool,
 }

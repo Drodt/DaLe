@@ -444,6 +444,7 @@ impl<'ir> LowerCtx<'ir> {
 
     fn lower_sort_modifiers(&mut self, m: raw::SortModifiers) -> SortModifiers {
         SortModifiers {
+            formula: m.formula,
             meta: m.meta,
             top: m.top,
         }

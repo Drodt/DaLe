@@ -254,7 +254,8 @@ SortDecl: SortDecl = {
 }
 
 SortModifiers: SortModifiers = {
-    <meta:"\\meta"?> <top:"\\top"?> => SortModifiers {
+    <formula:"\\formula"?> <meta:"\\meta"?> <top:"\\top"?> => SortModifiers {
+        formula: formula.is_some(),
         top: top.is_some(),
         meta: meta.is_some()
     }
