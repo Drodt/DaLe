@@ -1,4 +1,7 @@
-use std::collections::{HashMap, hash_map::Entry};
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    iter,
+};
 
 use dale_util::arena::DroplessArena;
 
@@ -6,7 +9,10 @@ use crate::ir::{
     self, Def, DefId, DefKind, FunctionDecl, GenericArg, GenericParam, GenericParamKind, IrId, Map,
     OperatorDecl, PredicateDecl, Res, SchemaVarDecl, SortDecl, SortModifiers, SortRef, Span, Term,
     TermKind,
-    visit::{Visit, visit_item, visit_sort_decl, visit_term},
+    visit::{
+        Visit, visit_function_decl, visit_item, visit_operator_decl, visit_predicate_decl,
+        visit_sort_decl, visit_term,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -65,6 +71,9 @@ pub enum CheckErr {
     ConstArgNotSubsort(IrId, DefId, usize),
     CallArgNotSubsort(IrId, DefId, usize),
     MultipleFormulaSorts(DefId, DefId),
+    MissingFormulaSort(DefId),
+    OperatorDoesNotUseFormula(DefId),
+    FormulaUsedOutsideOperator(DefId, IrId),
 }
 
 impl CheckErr {
@@ -85,6 +94,11 @@ impl CheckErr {
             }
             CheckErr::MultipleFormulaSorts(new_, old) => {
                 format!("Multiple formula sort definitions")
+            }
+            CheckErr::MissingFormulaSort(..) => format!("Missing formula sort"),
+            CheckErr::OperatorDoesNotUseFormula(..) => format!("Operator does not use formula"),
+            CheckErr::FormulaUsedOutsideOperator(..) => {
+                format!("Formula used for predicate or function declaration")
             }
         }
     }
@@ -277,14 +291,70 @@ impl<'ir> Visit<'ir> for Checker<'ir> {
 
     fn visit_operator_decl(&mut self, x: &'ir OperatorDecl<'ir>) {
         // Must use formula sort as an arg; otherwise, why not just a function/predicate?
+        if !x
+            .arg_sort_refs
+            .iter()
+            .chain(iter::once(x.sort_ref))
+            .any(|a| {
+                let Res::Def(DefKind::Sort, did) = a.path.res else {
+                    return false;
+                };
+                let Some(Def::SortDecl(decl)) = self.map.defs.get(&did) else {
+                    return false;
+                };
+                decl.modifiers.formula
+            })
+        {
+            self.errors.push(CheckErr::OperatorDoesNotUseFormula(x.id));
+        }
+        visit_operator_decl(self, x);
     }
 
     fn visit_predicate_decl(&mut self, x: &'ir PredicateDecl<'ir>) {
         // Must not use formula as arg; should be an operator, then
+        for s in x.arg_sort_refs.iter().filter_map(|a| {
+            let Res::Def(DefKind::Sort, did) = a.path.res else {
+                return None;
+            };
+            let Some(Def::SortDecl(decl)) = self.map.defs.get(&did) else {
+                return None;
+            };
+            if decl.modifiers.formula {
+                Some(a.id)
+            } else {
+                None
+            }
+        }) {
+            self.errors
+                .push(CheckErr::FormulaUsedOutsideOperator(x.id, s));
+        }
+        visit_predicate_decl(self, x);
     }
 
     fn visit_function_decl(&mut self, x: &'ir FunctionDecl<'ir>) {
         // Must not use formula as arg or result; should be an operator, then
+        for s in x
+            .arg_sort_refs
+            .iter()
+            .chain(iter::once(x.sort_ref))
+            .filter_map(|a| {
+                let Res::Def(DefKind::Sort, did) = a.path.res else {
+                    return None;
+                };
+                let Some(Def::SortDecl(decl)) = self.map.defs.get(&did) else {
+                    return None;
+                };
+                if decl.modifiers.formula {
+                    Some(a.id)
+                } else {
+                    None
+                }
+            })
+        {
+            self.errors
+                .push(CheckErr::FormulaUsedOutsideOperator(x.id, s));
+        }
+        visit_function_decl(self, x);
     }
 
     fn visit_term(&mut self, x: &'ir Term<'ir>) {

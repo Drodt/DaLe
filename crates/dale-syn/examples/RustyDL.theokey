@@ -371,6 +371,9 @@
   \operators {
     \rigid all<S>{0}(Formula) -> Formula;
     \rigid exists<S>{0}(Formula) -> Formula;
+  }
+
+  \functions {
     \rigid var<S>(NUMBER) -> S;
     \rigid subst<S>(S) -> S;
   }
