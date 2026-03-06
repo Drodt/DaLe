@@ -1,17 +1,14 @@
-use std::{
-    collections::{HashMap, hash_map::Entry},
-    iter,
-};
+use std::{collections::HashMap, iter};
 
 use dale_util::arena::DroplessArena;
 
 use crate::ir::{
     self, Def, DefId, DefKind, FunctionDecl, GenericArg, GenericParam, GenericParamKind, IrId, Map,
-    OperatorDecl, PredicateDecl, Res, SchemaVarDecl, SortDecl, SortModifiers, SortRef, Span, Term,
+    OperatorDecl, PredicateDecl, Res, SchemaVarDecl, SortDecl, SortModifiers, SortRef, Term,
     TermKind,
     visit::{
-        Visit, visit_function_decl, visit_item, visit_operator_decl, visit_predicate_decl,
-        visit_sort_decl, visit_term,
+        Visit, visit_function_decl, visit_operator_decl, visit_predicate_decl, visit_sort_decl,
+        visit_term,
     },
 };
 
@@ -79,26 +76,20 @@ pub enum CheckErr {
 impl CheckErr {
     pub fn format(&self) -> String {
         match self {
-            CheckErr::IncorrentNumberOfGenArgs(ir_id, def_id) => {
-                format!("Incorrect number of generic arguments.")
+            CheckErr::IncorrentNumberOfGenArgs(..) => {
+                "Incorrect number of generic arguments.".to_string()
             }
-            CheckErr::IncorrentNumberOfArgs(ir_id, def_id) => {
-                format!("Incorrect number of arguments.")
+            CheckErr::IncorrentNumberOfArgs(..) => "Incorrect number of arguments.".to_string(),
+            CheckErr::ArgKindMismatch(..) => "Generic arguement mismatch".to_string(),
+            CheckErr::ConstArgNotSubsort(..) => {
+                "Const generic argument is not subsort of parameter sort".to_string()
             }
-            CheckErr::ArgKindMismatch(ir_id, def_id, _) => format!("Generic arguement mismatch"),
-            CheckErr::ConstArgNotSubsort(ir_id, def_id, _) => {
-                format!("Const generic argument is not subsort of parameter sort")
-            }
-            CheckErr::CallArgNotSubsort(ir_id, def_id, _) => {
-                format!("Call argument is not subsort")
-            }
-            CheckErr::MultipleFormulaSorts(new_, old) => {
-                format!("Multiple formula sort definitions")
-            }
-            CheckErr::MissingFormulaSort(..) => format!("Missing formula sort"),
-            CheckErr::OperatorDoesNotUseFormula(..) => format!("Operator does not use formula"),
+            CheckErr::CallArgNotSubsort(..) => "Call argument is not subsort".to_string(),
+            CheckErr::MultipleFormulaSorts(..) => "Multiple formula sort definitions".to_string(),
+            CheckErr::MissingFormulaSort(..) => "Missing formula sort".to_string(),
+            CheckErr::OperatorDoesNotUseFormula(..) => "Operator does not use formula".to_string(),
             CheckErr::FormulaUsedOutsideOperator(..) => {
-                format!("Formula used for predicate or function declaration")
+                "Formula used for predicate or function declaration".to_string()
             }
         }
     }
@@ -271,7 +262,7 @@ impl<'ir> Checker<'ir> {
 
     fn convert_args(&mut self, args: &'ir [GenericArg<'ir>]) -> &'ir [GenArg<'ir>] {
         self.arena.alloc_from_iter(args.iter().map(|a| match a {
-            GenericArg::Sort(sort_ref) => GenArg::Sort(self.ref_to_sort(*sort_ref)),
+            GenericArg::Sort(sort_ref) => GenArg::Sort(self.ref_to_sort(sort_ref)),
             GenericArg::Const(term, _) => GenArg::Term(**term),
         }))
     }

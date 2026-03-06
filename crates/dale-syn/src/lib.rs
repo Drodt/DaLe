@@ -45,7 +45,10 @@ impl ParserCtx {
     }
 }
 
-lalrpop_mod!(dl_theory);
+lalrpop_mod!(
+    #[allow(clippy::type_complexity)]
+    dl_theory
+);
 
 fn get_line(input: &str, loc: usize) -> &str {
     let mut start = loc;

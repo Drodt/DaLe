@@ -299,8 +299,8 @@ pub fn visit_schema_var_decl<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Schema
 
 pub fn visit_term_or_seq<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a TermOrSeq<'a>) {
     match x {
-        TermOrSeq::Term(term) => v.visit_term(*term),
-        TermOrSeq::Seq(seq) => v.visit_seq(*seq),
+        TermOrSeq::Term(term) => v.visit_term(term),
+        TermOrSeq::Seq(seq) => v.visit_seq(seq),
     }
 }
 
@@ -331,10 +331,10 @@ pub fn visit_goal_spec<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a GoalSpec<'a>
         v.visit_ident(name);
     }
     if let Some(a) = &x.replace_with {
-        v.visit_term_or_seq(&a);
+        v.visit_term_or_seq(a);
     }
     if let Some(a) = &x.add {
-        v.visit_term_or_seq(&a);
+        v.visit_term_or_seq(a);
     }
 }
 

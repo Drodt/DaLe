@@ -46,7 +46,7 @@ impl ResolveErr {
                     ns
                 )
             }
-            ResolveErr::NoRes(_) => format!("No resolution found"),
+            ResolveErr::NoRes(_) => "No resolution found".to_string(),
         }
     }
 
@@ -508,7 +508,7 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         let def_id = self.resolver.node_id_to_def_id[&x.id].to_def_id();
         self.add_res(
             Namespace::TheoryNS,
-            x.name.clone(),
+            x.name,
             Res::Def(DefKind::Theory, def_id),
         );
         self.theory_data.insert(def_id, theory);
@@ -571,7 +571,7 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         self.with_generics(|this| visit_function_decl(this, x));
         self.add_res(
             Namespace::OpNS,
-            x.name.clone(),
+            x.name,
             Res::Def(
                 if self.in_operator_context {
                     DefKind::Operator
@@ -587,7 +587,7 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         self.with_generics(|this| visit_sort_decl(this, x));
         self.add_res(
             Namespace::SortNS,
-            x.name.clone(),
+            x.name,
             Res::Def(
                 DefKind::Sort,
                 self.resolver.node_id_to_def_id[&x.id].to_def_id(),
@@ -598,7 +598,7 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
     fn visit_rule_set_decl(&mut self, x: &'ast raw::RuleSetDecl) {
         self.add_res(
             Namespace::RuleSetNS,
-            x.name.clone(),
+            x.name,
             Res::Def(
                 DefKind::RuleSet,
                 self.resolver.node_id_to_def_id[&x.id].to_def_id(),
@@ -610,7 +610,7 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         self.with_generics(|this| visit_predicate_decl(this, x));
         self.add_res(
             Namespace::OpNS,
-            x.name.clone(),
+            x.name,
             Res::Def(
                 DefKind::Pred,
                 self.resolver.node_id_to_def_id[&x.id].to_def_id(),
@@ -624,7 +624,7 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         });
         self.add_res(
             Namespace::RuleNS,
-            x.name.clone(),
+            x.name,
             Res::Def(
                 DefKind::Rule,
                 self.resolver.node_id_to_def_id[&x.id].to_def_id(),
@@ -636,7 +636,7 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         visit_schema_var_decl(self, x);
         self.add_res(
             Namespace::OpNS,
-            x.name.clone(),
+            x.name,
             Res::Def(
                 DefKind::SchemaVar,
                 self.resolver.node_id_to_def_id[&x.id].to_def_id(),
@@ -684,7 +684,7 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         };
         self.add_res(
             ns,
-            x.name.clone(),
+            x.name,
             Res::Def(kind, self.resolver.node_id_to_def_id[&x.id].to_def_id()),
         );
     }
@@ -716,7 +716,7 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         self.resolver.errors.push(ResolveErr::NotFound(
             x.segments[0].ident.node,
             self.expected_ns,
-            x.span.clone(),
+            x.span,
         ));
         self.resolver.resolved.insert(seg.id, Res::Err);
     }
