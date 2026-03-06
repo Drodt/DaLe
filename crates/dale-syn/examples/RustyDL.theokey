@@ -15,14 +15,42 @@
   }
 
   \rulesets {
-    closure;
-    replace_known_left;
-    replace_known_right;
-    concrete;
-    alpha;
-    beta;
-    cut;
-    cut_direct;
+    closure {
+      -15000
+    }
+    replace_known_left {
+      if matched_assumes && different_assumes_and_find && different_replacewith_and_find {
+        -5000 + scale(count_max_d_path, 10.0)
+      } else {
+        top
+      }
+    }
+    replace_known_right {
+      if matched_assumes && different_assumes_and_find && different_replacewith_and_find {
+        -5000 + scale(count_max_d_path, 10.0) + if directly_below_op_at_idx(imp, 1) || directly_below_op_at_idx(equiv, -1) {
+          100
+        } else {
+          0
+        }
+      } else {
+        top
+      }
+    }
+    concrete {
+      -11000
+    }
+    alpha {
+      -7000
+    }
+    beta {
+      top
+    }
+    cut {
+      top
+    }
+    cut_direct {
+      top
+    }
   }
 
   \rules {

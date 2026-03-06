@@ -268,4 +268,28 @@ pub type RuleSetDecls = Vec<RuleSetDecl>;
 pub struct RuleSetDecl {
     pub id: NodeId,
     pub name: Ident,
+    pub cost: Cost,
+}
+
+#[derive(Debug, Clone)]
+pub enum Cost {
+    Top,
+    Int(i64),
+    Add(Box<Cost>, Box<Cost>),
+    If(Box<BoolCost>, Box<Cost>, Box<Cost>),
+    Ident(Ident),
+    Call(Ident, Vec<CostArg>),
+}
+
+#[derive(Debug, Clone)]
+pub enum BoolCost {
+    Cost(Cost),
+    And(Box<BoolCost>, Box<BoolCost>),
+    Or(Box<BoolCost>, Box<BoolCost>),
+}
+
+#[derive(Debug, Clone)]
+pub enum CostArg {
+    Cost(Cost),
+    Float(f64),
 }

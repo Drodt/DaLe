@@ -215,9 +215,7 @@ PredicateDecl: PredicateDecl = {
     }
 }
 
-WhereToBind: Vec<u8> = "{" <nums:Comma<NumU8>> "}" => nums;
-
-NumU8: u8 = <s:r"[0-9]+"> => u8::from_str(s).unwrap();
+WhereToBind: Vec<u8> = "{" <nums:Comma<Int>> "}" => nums.into_iter().map(|n| n as u8).collect();
 
 Sort: Sort = {
     <start: @L> <path:Path> "<" <args:Comma<GenericArg>> ">" <end: @R> => Sort {
@@ -379,6 +377,39 @@ TermOrSeq: TermOrSeq = {
     <t:Term> => TermOrSeq::Term(t)
 }
 
-RuleSetDecl: RuleSetDecl = <i:Ident> ";" => RuleSetDecl {id: ctx.id(), name: i};
+RuleSetDecl: RuleSetDecl = <i:Ident> "{" <c:Cost> "}" => RuleSetDecl {id: ctx.id(), name: i, cost: c};
 
 StringValue: String = <l:r#""[^\n"]+""#> => l[1..l.len() - 1].into();
+
+Cost: Cost = {
+    <c1:Cost> "+" <c2:CostAtom> => Cost::Add(Box::new(c1), Box::new(c2)),
+    <a:CostAtom> => a
+}
+
+CostAtom: Cost = {
+    "if" <cond:BoolCost> "{" <c1:Cost> "}" "else" "{" <c2:Cost> "}" => Cost::If(Box::new(cond), Box::new(c1), Box::new(c2)),
+    "top" => Cost::Top,
+    <i:Int> => Cost::Int(i),
+    <id:Ident> => Cost::Ident(id),
+    <id:Ident> "(" <args:Comma<CostArg>> ")" => Cost::Call(id, args),
+}
+
+BoolCost: BoolCost = {
+    #[precedence(level = "0")]
+    <c:Cost> => BoolCost::Cost(c),
+    #[precedence(level = "1")]
+    #[assoc(side = "left")]
+    <c1:BoolCost> "&&" <c2:BoolCost> => BoolCost::And(Box::new(c1), Box::new(c2)),
+    #[precedence(level = "2")]
+    #[assoc(side = "left")]
+    <c1:BoolCost> "||" <c2:BoolCost> => BoolCost::Or(Box::new(c1), Box::new(c2))
+}
+
+CostArg: CostArg = {
+    <c:Cost> => CostArg::Cost(c),
+    <f:Float> => CostArg::Float(f)
+}
+
+Int: i64 = <s:r"-?[0-9]+"> => i64::from_str(s).unwrap();
+
+Float: f64 = <s:r"-?[0-9]*\.[0-9]+"> => f64::from_str(s).unwrap();
