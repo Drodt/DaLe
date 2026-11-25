@@ -34,6 +34,8 @@ pub trait Visitable {
 
 create_visitor_traits! {
   file: File,
+  module_item: ModuleItem,
+  module: Module,
   theory: Theory,
   path: Path,
   path_segment: PathSegment,
@@ -72,8 +74,23 @@ create_visitor_traits! {
 
 pub fn visit_file<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a File) {
     v.visit_id(&x.id);
-    for t in &x.theories {
-        v.visit_theory(t);
+    for i in &x.items {
+        v.visit_module_item(i);
+    }
+}
+
+pub fn visit_module_item<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a ModuleItem) {
+    match x {
+        ModuleItem::Theory(t) => v.visit_theory(t),
+        ModuleItem::Module(m) => v.visit_module(m),
+    }
+}
+
+pub fn visit_module<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Module) {
+    v.visit_id(&x.id);
+    v.visit_ident(&x.name);
+    for i in &x.items {
+        v.visit_module_item(i);
     }
 }
 

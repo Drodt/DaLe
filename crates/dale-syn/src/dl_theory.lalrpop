@@ -18,7 +18,30 @@ match {
 }
 
 pub File: File = {
-    <theories:Theory*> => File { id: ctx.id(), theories }
+    <items:ModuleItem*> => File { id: ctx.id(), items }
+}
+
+pub ModuleItem: ModuleItem = {
+    <t:Theory> => ModuleItem::Theory(t),
+    <m:Module> => ModuleItem::Module(m),
+}
+
+// `\module Name;` is loaded from the file `Name.theokey`; `\module Name { ... }` is inline.
+pub Module: Module = {
+    <start: @L> "\\module" <name:Ident> ";" <end: @R> => Module {
+        id: ctx.id(),
+        name,
+        span: ctx.span(start, end),
+        external: true,
+        items: Vec::new(),
+    },
+    <start: @L> "\\module" <name:Ident> "{" <items:ModuleItem*> "}" <end: @R> => Module {
+        id: ctx.id(),
+        name,
+        span: ctx.span(start, end),
+        external: false,
+        items,
+    },
 }
 
 pub Theory: Theory = {
@@ -27,11 +50,11 @@ pub Theory: Theory = {
 };
 
 pub Ident: Spanned<Symbol> = {
-    <start: @L> <s:r"[a-zA-Z][a-zA-Z0-9_]*"> <end: @R> => Spanned::new(ctx.intern(s), Span(start, end)),
-    <start: @L> <s:r"_[a-zA-Z0-9]+"> <end: @R> => Spanned::new(ctx.intern(s), Span(start, end)),
+    <start: @L> <s:r"[a-zA-Z][a-zA-Z0-9_]*"> <end: @R> => Spanned::new(ctx.intern(s), ctx.span(start, end)),
+    <start: @L> <s:r"_[a-zA-Z0-9]+"> <end: @R> => Spanned::new(ctx.intern(s), ctx.span(start, end)),
 }
 
-Item: Item = <start: @L> <k:ItemKind> <end: @R> => Item {id: ctx.id(), span: Span(start, end), kind: k};
+Item: Item = <start: @L> <k:ItemKind> <end: @R> => Item {id: ctx.id(), span: ctx.span(start, end), kind: k};
 
 ItemKind: ItemKind = {
     "\\use" <UseTree> ";" => ItemKind::Use(<>),
@@ -50,22 +73,22 @@ UseTree: UseTree = {
     <start: @L> <prefix:Path> "::*" <end: @R> => UseTree {
         prefix,
         kind: UseTreeKind::Glob,
-        span: Span(start, end)
+        span: ctx.span(start, end)
     },
     <start: @L> <prefix:Path> <end: @R> => UseTree {
         prefix,
         kind: UseTreeKind::Simple(None),
-        span: Span(start, end)
+        span: ctx.span(start, end)
     },
     <start: @L> <prefix:Path> "as" <i:Ident> <end: @R> => UseTree {
         prefix,
         kind: UseTreeKind::Simple(Some(i)),
-        span: Span(start, end)
+        span: ctx.span(start, end)
     },
     <start: @L> <prefix:Path> "::{" <inner_start: @L> <items:Comma<UseTreeWithId>> <inner_end: @R> "}" <end: @R> => UseTree {
         prefix,
-        kind: UseTreeKind::Nested {items, span: Span(inner_start, inner_end)},
-        span: Span(start, end)
+        kind: UseTreeKind::Nested {items, span: ctx.span(inner_start, inner_end)},
+        span: ctx.span(start, end)
     }
 }
 
@@ -104,12 +127,12 @@ DoubleColon<T>: Vec<T> = {
 Path: Path = {
     <start: @L> <segments:DoubleColon<PathSegment>> <end: @R> => 
     Path {
-        span: Span(start, end),
+        span: ctx.span(start, end),
         segments
     }
 } 
 
-PathSegment: PathSegment = <start: @L> <ident:Ident> <end: @R> => PathSegment { id: ctx.id(), ident, span: Span(start, end) };
+PathSegment: PathSegment = <start: @L> <ident:Ident> <end: @R> => PathSegment { id: ctx.id(), ident, span: ctx.span(start, end) };
 
 FunctionDecl: FunctionDecl = {
     <modifiers:FunctionModifiers> <name:Ident> "->" <sort:Sort> ";" => FunctionDecl {
@@ -232,12 +255,12 @@ WhereToBind: Vec<u8> = "{" <nums:Comma<Int>> "}" => nums.into_iter().map(|n| n a
 Sort: Sort = {
     <start: @L> <path:Path> "<" <args:Comma<GenericArg>> ">" <end: @R> => Sort {
         id: ctx.id(),
-        span: Span(start, end),
+        span: ctx.span(start, end),
         kind: SortKind::Parametric(path, args)
     },
     <start: @L> <path:Path> <end: @R> => Sort {
         id: ctx.id(),
-        span: Span(start, end),
+        span: ctx.span(start, end),
         kind: SortKind::Simple(path)
     },
 }
@@ -248,7 +271,7 @@ SortDecl: SortDecl = {
         id: ctx.id(),
         modifiers,
         name,
-        span: Span(start, end),
+        span: ctx.span(start, end),
         params,
         extends: None
     },
@@ -257,7 +280,7 @@ SortDecl: SortDecl = {
         id: ctx.id(),
         modifiers,
         name,
-        span: Span(start, end),
+        span: ctx.span(start, end),
         params: vec![],
         extends: None
     }
@@ -275,10 +298,10 @@ GenericParam: GenericParam = {
     <start: @L> "const" <name:Ident> <cstart: @L> ":" <cend: @R> <sort:Sort> <end: @R> => GenericParam {
         name,
         id: ctx.id(),
-        colon_span: Some(Span(cstart, cend)),
+        colon_span: Some(ctx.span(cstart, cend)),
         kind: GenericParamKind::Const {
             sort,
-            span: Span(start, end)
+            span: ctx.span(start, end)
         },
     },
     <name:Ident> => GenericParam {
@@ -290,19 +313,19 @@ GenericParam: GenericParam = {
 }
 
 GenericArg: GenericArg = {
-    <start: @L> "const" <t:Term> <end: @R> => GenericArg::Const(t, Span(start, end)),
+    <start: @L> "const" <t:Term> <end: @R> => GenericArg::Const(t, ctx.span(start, end)),
     <Sort> => GenericArg::Sort(<>)
 }
 
 Term: Term = {
     <start: @L> <p:Path> "(" <args:Comma<Term>> ")" <end: @R> => Term {
         id: ctx.id(),
-        span: Span(start, end),
+        span: ctx.span(start, end),
         kind: TermKind::Call(p, args)
     },
     <start: @L> <p:Path> <end: @R> => Term {
         id: ctx.id(),
-        span: Span(start, end),
+        span: ctx.span(start, end),
         kind: TermKind::Path(p)
     }
 }
@@ -324,30 +347,30 @@ Rule: Rule = {
         goal_specs,
         rule_sets,
         display_name,
-        span: Span(start, end)
+        span: ctx.span(start, end)
     }
 }
 
 SchemaVarDecl: SchemaVarDecl = {
     <start: @L> "\\schemaVar" <name:Ident> ":" <sort:Sort> ";" <end: @R> => SchemaVarDecl {
         id: ctx.id(),
-        span: Span(start, end),
+        span: ctx.span(start, end),
         name,
         sort
     }
 }
 
 Assumes: Spanned<TermOrSeq> = {
-    <start: @L> "\\assumes" "(" <tos:TermOrSeq> ")" <end:@R> => Spanned::new(tos, Span(start, end))
+    <start: @L> "\\assumes" "(" <tos:TermOrSeq> ")" <end:@R> => Spanned::new(tos, ctx.span(start, end))
 }
 
 Find: Spanned<TermOrSeq> = {
-    <start: @L> "\\find" "(" <tos:TermOrSeq> ")" <end:@R> => Spanned::new(tos, Span(start, end))
+    <start: @L> "\\find" "(" <tos:TermOrSeq> ")" <end:@R> => Spanned::new(tos, ctx.span(start, end))
 }
 
 GoalSpecs: GoalSpecs = {
-    <start: @L> "\\closegoal" <end:@R> => GoalSpecs::CloseGoal(ctx.id(), Span(start, end)),
-    <start: @L> <specs:Semi<GoalSpec>> <end: @R> => GoalSpecs::Specs(specs, Span(start, end))
+    <start: @L> "\\closegoal" <end:@R> => GoalSpecs::CloseGoal(ctx.id(), ctx.span(start, end)),
+    <start: @L> <specs:Semi<GoalSpec>> <end: @R> => GoalSpecs::Specs(specs, ctx.span(start, end))
 }
 
 GoalSpec: GoalSpec = {
@@ -356,31 +379,31 @@ GoalSpec: GoalSpec = {
         name,
         replace_with: Some(t),
         add: None,
-        span: Span(start, end)
+        span: ctx.span(start, end)
     },
     <start: @L> <name:GoalSpecName?> "\\replacewith" "(" <r:TermOrSeq> ")" "\\add" "(" <a:TermOrSeq> ")" <end: @R> => GoalSpec {
         id: ctx.id(),
         name,
         replace_with: Some(r),
         add: Some(a),
-        span: Span(start, end)
+        span: ctx.span(start, end)
     },
     <start: @L> <name:GoalSpecName?> "\\add" "(" <a:TermOrSeq> ")" <end: @R> => GoalSpec {
         id: ctx.id(),
         name,
         replace_with: None,
         add: Some(a),
-        span: Span(start, end)
+        span: ctx.span(start, end)
     }
 }
 
 GoalSpecName: Ident = {
-    <start: @L> <s:StringValue> ":" <end: @R> => Spanned::new(ctx.intern(&s), Span(start, end))
+    <start: @L> <s:StringValue> ":" <end: @R> => Spanned::new(ctx.intern(&s), ctx.span(start, end))
 }
 
-CloseGoal: Span = <start: @L> "\\closegoal" <end: @R> => Span(start, end);
+CloseGoal: Span = <start: @L> "\\closegoal" <end: @R> => ctx.span(start, end);
 
-RuleRuleSets: Spanned<Vec<RuleSetRef>> = <start: @L> "\\rulesets" "(" <rs:Comma<RuleSetRef>> ")" <end: @R> => Spanned::new(rs, Span(start, end));
+RuleRuleSets: Spanned<Vec<RuleSetRef>> = <start: @L> "\\rulesets" "(" <rs:Comma<RuleSetRef>> ")" <end: @R> => Spanned::new(rs, ctx.span(start, end));
 
 // A ruleset a rule belongs to, optionally instantiating the ruleset's parameters:
 //   \rulesets(alpha, apply_equation(r))
@@ -389,7 +412,7 @@ RuleSetRef: RuleSetRef = {
     <p:Path> "(" <args:Comma<Expr>> ")" => RuleSetRef { id: ctx.id(), path: p, args },
 }
 
-DisplayName: Spanned<Symbol> = <start: @L> "\\displayname" <l:StringValue> <end: @R> => Spanned::new(ctx.intern(&l), Span(start, end));
+DisplayName: Spanned<Symbol> = <start: @L> "\\displayname" <l:StringValue> <end: @R> => Spanned::new(ctx.intern(&l), ctx.span(start, end));
 
 TermOrSeq: TermOrSeq = {
     <ante:Comma<Term>> "==>" <succ:Comma<Term>> => TermOrSeq::Seq(Seq { id: ctx.id(), ante, succ }),
@@ -407,7 +430,7 @@ RuleSetDecl: RuleSetDecl = {
     <start: @L> <ext:RuleSetExt?> <name:Ident> <params:RuleSetParams?> <stage:StageAssert?>
     "{" <guards:Guard*> <body:Expr> "}" <end: @R> => RuleSetDecl {
         id: ctx.id(),
-        span: Span(start, end),
+        span: ctx.span(start, end),
         ext,
         name,
         params: params.unwrap_or_default(),
@@ -428,7 +451,7 @@ StageAssert: Ident = "\\stage" "(" <Ident> ")";
 
 Guard: Guard = <start: @L> "guard" <p:Path> ";" <end: @R> => Guard {
     id: ctx.id(),
-    span: Span(start, end),
+    span: ctx.span(start, end),
     path: p
 };
 
@@ -436,19 +459,19 @@ Guard: Guard = <start: @L> "guard" <p:Path> ";" <end: @R> => Guard {
 CostItem: CostItem = {
     <start: @L> "const" <name:Ident> ":" <ty:CostTy> "=" <value:Expr> ";" <end: @R> => CostItem {
         id: ctx.id(),
-        span: Span(start, end),
+        span: ctx.span(start, end),
         kind: CostItemKind::Const { name, ty, value }
     },
     <start: @L> "fn" <name:Ident> "(" <params:Comma<CostParam>> ")" "->" <ret:CostTy> "{" <body:Expr> "}" <end: @R> => CostItem {
         id: ctx.id(),
-        span: Span(start, end),
+        span: ctx.span(start, end),
         kind: CostItemKind::Fn { name, params, ret, body }
     },
 }
 
 CostParam: CostParam = <start: @L> <name:Ident> ":" <ty:CostTy> <end: @R> => CostParam {
     id: ctx.id(),
-    span: Span(start, end),
+    span: ctx.span(start, end),
     name,
     ty
 };
@@ -457,13 +480,13 @@ CostParam: CostParam = <start: @L> <name:Ident> ":" <ty:CostTy> <end: @R> => Cos
 CostTy: CostTy = {
     <start: @L> <name:Ident> <end: @R> => CostTy {
         id: ctx.id(),
-        span: Span(start, end),
+        span: ctx.span(start, end),
         name,
         arg: None
     },
     <start: @L> <name:Ident> "<" <arg:Sort> ">" <end: @R> => CostTy {
         id: ctx.id(),
-        span: Span(start, end),
+        span: ctx.span(start, end),
         name,
         arg: Some(arg)
     },
@@ -479,24 +502,24 @@ CostTy: CostTy = {
 pub Expr: Expr = {
     <start: @L> "let" <name:Ident> "=" <value:Expr> ";" <body:Expr> <end: @R> => Expr {
         id: ctx.id(),
-        span: Span(start, end),
+        span: ctx.span(start, end),
         kind: ExprKind::Let(ctx.id(), name, Box::new(value), Box::new(body))
     },
     OrExpr,
 }
 
 OrExpr: Expr = {
-    <start: @L> <a:OrExpr> "||" <b:AndExpr> <end: @R> => mk_binary(ctx.id(), Span(start, end), BinOp::Or, a, b),
+    <start: @L> <a:OrExpr> "||" <b:AndExpr> <end: @R> => mk_binary(ctx.id(), ctx.span(start, end), BinOp::Or, a, b),
     AndExpr,
 }
 
 AndExpr: Expr = {
-    <start: @L> <a:AndExpr> "&&" <b:CmpExpr> <end: @R> => mk_binary(ctx.id(), Span(start, end), BinOp::And, a, b),
+    <start: @L> <a:AndExpr> "&&" <b:CmpExpr> <end: @R> => mk_binary(ctx.id(), ctx.span(start, end), BinOp::And, a, b),
     CmpExpr,
 }
 
 CmpExpr: Expr = {
-    <start: @L> <a:AddExpr> <op:CmpOp> <b:AddExpr> <end: @R> => mk_binary(ctx.id(), Span(start, end), op, a, b),
+    <start: @L> <a:AddExpr> <op:CmpOp> <b:AddExpr> <end: @R> => mk_binary(ctx.id(), ctx.span(start, end), op, a, b),
     AddExpr,
 }
 
@@ -510,7 +533,7 @@ CmpOp: BinOp = {
 }
 
 AddExpr: Expr = {
-    <start: @L> <a:AddExpr> <op:AddOp> <b:MulExpr> <end: @R> => mk_binary(ctx.id(), Span(start, end), op, a, b),
+    <start: @L> <a:AddExpr> <op:AddOp> <b:MulExpr> <end: @R> => mk_binary(ctx.id(), ctx.span(start, end), op, a, b),
     MulExpr,
 }
 
@@ -520,29 +543,29 @@ AddOp: BinOp = {
 }
 
 MulExpr: Expr = {
-    <start: @L> <a:MulExpr> "*" <b:UnaryExpr> <end: @R> => mk_binary(ctx.id(), Span(start, end), BinOp::Mul, a, b),
+    <start: @L> <a:MulExpr> "*" <b:UnaryExpr> <end: @R> => mk_binary(ctx.id(), ctx.span(start, end), BinOp::Mul, a, b),
     UnaryExpr,
 }
 
 UnaryExpr: Expr = {
-    <start: @L> "-" <e:UnaryExpr> <end: @R> => mk_neg(ctx.id(), Span(start, end), e),
-    <start: @L> "!" <e:UnaryExpr> <end: @R> => mk_not(ctx.id(), Span(start, end), e),
+    <start: @L> "-" <e:UnaryExpr> <end: @R> => mk_neg(ctx.id(), ctx.span(start, end), e),
+    <start: @L> "!" <e:UnaryExpr> <end: @R> => mk_not(ctx.id(), ctx.span(start, end), e),
     AtomExpr,
 }
 
 AtomExpr: Expr = {
-    <start: @L> <i:Int> <end: @R> => Expr { id: ctx.id(), span: Span(start, end), kind: ExprKind::Int(i) },
-    <start: @L> <f:Float> <end: @R> => Expr { id: ctx.id(), span: Span(start, end), kind: ExprKind::Float(f) },
-    <start: @L> "top" <end: @R> => Expr { id: ctx.id(), span: Span(start, end), kind: ExprKind::Top },
-    <start: @L> <p:Path> <end: @R> => Expr { id: ctx.id(), span: Span(start, end), kind: ExprKind::Path(p) },
+    <start: @L> <i:Int> <end: @R> => Expr { id: ctx.id(), span: ctx.span(start, end), kind: ExprKind::Int(i) },
+    <start: @L> <f:Float> <end: @R> => Expr { id: ctx.id(), span: ctx.span(start, end), kind: ExprKind::Float(f) },
+    <start: @L> "top" <end: @R> => Expr { id: ctx.id(), span: ctx.span(start, end), kind: ExprKind::Top },
+    <start: @L> <p:Path> <end: @R> => Expr { id: ctx.id(), span: ctx.span(start, end), kind: ExprKind::Path(p) },
     <start: @L> <p:Path> "(" <args:Comma<CallArg>> ")" <end: @R> => Expr {
         id: ctx.id(),
-        span: Span(start, end),
+        span: ctx.span(start, end),
         kind: ExprKind::Call(p, args)
     },
     <start: @L> "if" <c:Expr> "{" <a:Expr> "}" "else" "{" <b:Expr> "}" <end: @R> => Expr {
         id: ctx.id(),
-        span: Span(start, end),
+        span: ctx.span(start, end),
         kind: ExprKind::If(Box::new(c), Box::new(a), Box::new(b))
     },
     "(" <Expr> ")",
@@ -553,7 +576,7 @@ CallArg: CallArg = {
     <e:Expr> => CallArg::Expr(e),
     <start: @L> <var:Ident> "in" <generator:Expr> ":" <body:Expr> <end: @R> => CallArg::Binder(Binder {
         id: ctx.id(),
-        span: Span(start, end),
+        span: ctx.span(start, end),
         var,
         generator,
         body

@@ -147,7 +147,43 @@ impl<'ir> Def<'ir> {
 #[derive(Debug, Clone, Copy)]
 pub struct File<'ir> {
     pub id: FileId,
-    pub theories: &'ir [Theory<'ir>],
+    pub items: &'ir [ModuleItem<'ir>],
+}
+
+impl<'ir> File<'ir> {
+    /// All theories of the file, including those in (nested) modules, in declaration order.
+    pub fn theories(&self) -> Vec<Theory<'ir>> {
+        let mut out = Vec::new();
+        collect_theories(self.items, &mut out);
+        out
+    }
+}
+
+fn collect_theories<'ir>(items: &'ir [ModuleItem<'ir>], out: &mut Vec<Theory<'ir>>) {
+    for i in items {
+        match i {
+            ModuleItem::Theory(t) => out.push(*t),
+            ModuleItem::Module(m) => collect_theories(m.items, out),
+        }
+    }
+}
+
+/// What a file or a module contains. Modules loaded from their own file (`\module Name;`) are
+/// lowered like inline ones; the spans inside tell the file apart.
+#[derive(Debug, Clone, Copy)]
+pub enum ModuleItem<'ir> {
+    Theory(Theory<'ir>),
+    Module(Module<'ir>),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Module<'ir> {
+    pub id: DefId,
+    pub name: Ident,
+    pub span: Span,
+    /// Declared as `\module Name;`, i.e. loaded from `Name.theokey`.
+    pub external: bool,
+    pub items: &'ir [ModuleItem<'ir>],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -467,6 +503,7 @@ pub enum Res {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DefKind {
     File,
+    Module,
     Theory,
     Use,
     Operator,

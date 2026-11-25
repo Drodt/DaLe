@@ -9,20 +9,275 @@ use crate::{
     ctx::Ctx,
     ir::{DefId, DefKind, LocalDefId, Res},
     raw_theory::{
-        self as raw, File, Ident, NodeId, PathSegment, Span, UseTreeKind, Visit, visit_binder,
-        visit_cost_item, visit_cost_param, visit_expr, visit_file, visit_function_decl,
-        visit_generic_param, visit_item, visit_item_kind, visit_predicate_decl, visit_rule,
-        visit_rule_set_decl, visit_schema_var_decl, visit_sort, visit_sort_decl, visit_term,
-        visit_theory, visit_use_tree,
+        self as raw, File, Ident, NodeId, PathSegment, Span, UseTree, UseTreeKind, Visit,
+        visit_binder, visit_cost_item, visit_cost_param, visit_expr, visit_file,
+        visit_function_decl, visit_generic_param, visit_item, visit_item_kind, visit_module,
+        visit_predicate_decl, visit_rule, visit_rule_set_decl, visit_schema_var_decl, visit_sort,
+        visit_sort_decl, visit_term, visit_theory, visit_use_tree,
     },
 };
 
 pub fn resolve<'cx>(cx: Ctx<'cx>, file: &File) -> Resolver {
     let mut r = Resolver::new();
     collect_defs(&mut r, file);
+    // Modules and the targets of `\use`s first; then every theory, after the theories it uses.
+    let (order, use_targets) = ModulePass::new(&mut r).run(file);
     let mut sb = ScopeBuilder::new(cx, &mut r);
-    sb.visit_file(file);
+    sb.use_targets = use_targets;
+    for t in order {
+        sb.visit_theory(t);
+    }
     r
+}
+
+/// The names declared directly in a module (or the file root): theories and modules share one
+/// namespace.
+#[derive(Default)]
+struct ModuleData {
+    names: IndexMap<Symbol, Res>,
+}
+
+struct TheoryInfo<'a> {
+    theory: &'a raw::Theory,
+    def: DefId,
+    /// The enclosing modules, outermost (the file) first.
+    scope: Vec<DefId>,
+}
+
+/// A leaf of a `\use` tree with its full path.
+struct UseLeaf {
+    id: NodeId,
+    path: Vec<PathSegment>,
+    glob: bool,
+    span: Span,
+}
+
+fn collect_use_leaves(
+    tree: &raw::UseTree,
+    prefix: &[PathSegment],
+    id: NodeId,
+    out: &mut Vec<UseLeaf>,
+) {
+    let mut path = prefix.to_vec();
+    path.extend(tree.prefix.segments.iter().cloned());
+    match &tree.kind {
+        UseTreeKind::Glob => out.push(UseLeaf {
+            id,
+            path,
+            glob: true,
+            span: tree.span,
+        }),
+        UseTreeKind::Simple(_) => out.push(UseLeaf {
+            id,
+            path,
+            glob: false,
+            span: tree.span,
+        }),
+        UseTreeKind::Nested { items, .. } => {
+            for (t, nid) in items {
+                collect_use_leaves(t, &path, *nid, out);
+            }
+        }
+    }
+}
+
+/// Resolves the module structure: who is declared where, which theory every `\use` names, and in
+/// which order the theories have to be processed.
+struct ModulePass<'a, 'r> {
+    resolver: &'r mut Resolver,
+    modules: HashMap<DefId, ModuleData>,
+    theories: Vec<TheoryInfo<'a>>,
+}
+
+impl<'a, 'r> ModulePass<'a, 'r> {
+    fn new(resolver: &'r mut Resolver) -> Self {
+        Self {
+            resolver,
+            modules: HashMap::new(),
+            theories: Vec::new(),
+        }
+    }
+
+    fn run(mut self, file: &'a File) -> (Vec<&'a raw::Theory>, HashMap<NodeId, DefId>) {
+        let root = self.resolver.def_id(file.id);
+        let mut scope = Vec::new();
+        self.collect(&file.items, root, &mut scope);
+
+        // `\use` targets and the dependency edges between theories.
+        let mut targets = HashMap::new();
+        let mut edges: HashMap<DefId, Vec<(DefId, Span)>> = HashMap::new();
+        for i in 0..self.theories.len() {
+            let th: &'a raw::Theory = self.theories[i].theory;
+            let (def, scope, items) = (
+                self.theories[i].def,
+                self.theories[i].scope.clone(),
+                &th.items,
+            );
+            let mut leaves = Vec::new();
+            for item in items {
+                if let raw::ItemKind::Use(tree) = &item.kind {
+                    collect_use_leaves(tree, &[], item.id, &mut leaves);
+                }
+            }
+            for leaf in leaves {
+                let theory_path = if leaf.glob {
+                    &leaf.path[..]
+                } else {
+                    &leaf.path[..leaf.path.len() - 1]
+                };
+                let target = if theory_path.is_empty() {
+                    // `\use Name;` has no theory to import from.
+                    let name = leaf.path.last().expect("non-empty path").ident;
+                    self.resolver
+                        .errors
+                        .push(ResolveErr::ExpectedTheory(name.node, name.span));
+                    None
+                } else {
+                    self.resolve_theory_path(&scope, theory_path, leaf.span)
+                };
+                if let Some(t) = target {
+                    targets.insert(leaf.id, t);
+                    edges.entry(def).or_default().push((t, leaf.span));
+                }
+            }
+        }
+
+        // Dependencies first (depth-first); cyclic edges are reported and dropped.
+        let index: HashMap<DefId, usize> = self
+            .theories
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.def, i))
+            .collect();
+        let mut state = vec![0u8; self.theories.len()];
+        let mut order = Vec::with_capacity(self.theories.len());
+        for i in 0..self.theories.len() {
+            self.dfs(i, &index, &edges, &mut state, &mut order);
+        }
+        (
+            order.into_iter().map(|i| self.theories[i].theory).collect(),
+            targets,
+        )
+    }
+
+    fn dfs(
+        &mut self,
+        i: usize,
+        index: &HashMap<DefId, usize>,
+        edges: &HashMap<DefId, Vec<(DefId, Span)>>,
+        state: &mut Vec<u8>,
+        order: &mut Vec<usize>,
+    ) {
+        if state[i] != 0 {
+            return;
+        }
+        state[i] = 1;
+        let def = self.theories[i].def;
+        let name = self.theories[i].theory.name.node;
+        for (dep, span) in edges.get(&def).into_iter().flatten() {
+            let Some(&j) = index.get(dep) else { continue };
+            if state[j] == 1 {
+                self.resolver
+                    .errors
+                    .push(ResolveErr::CyclicUse(name, *span));
+            } else {
+                self.dfs(j, index, edges, state, order);
+            }
+        }
+        state[i] = 2;
+        order.push(i);
+    }
+
+    fn declare(&mut self, module: DefId, name: Ident, res: Res) {
+        let data = self.modules.entry(module).or_default();
+        match data.names.entry(name.node) {
+            indexmap::map::Entry::Occupied(_) => {
+                self.resolver
+                    .errors
+                    .push(ResolveErr::DuplicateName(name.node, name.span));
+            }
+            indexmap::map::Entry::Vacant(v) => {
+                v.insert(res);
+            }
+        }
+    }
+
+    fn collect(&mut self, items: &'a [raw::ModuleItem], module: DefId, scope: &mut Vec<DefId>) {
+        self.modules.entry(module).or_default();
+        scope.push(module);
+        for item in items {
+            match item {
+                raw::ModuleItem::Theory(t) => {
+                    let def = self.resolver.def_id(t.id);
+                    self.declare(module, t.name, Res::Def(DefKind::Theory, def));
+                    self.theories.push(TheoryInfo {
+                        theory: t,
+                        def,
+                        scope: scope.clone(),
+                    });
+                }
+                raw::ModuleItem::Module(m) => {
+                    let def = self.resolver.def_id(m.id);
+                    self.declare(module, m.name, Res::Def(DefKind::Module, def));
+                    self.collect(&m.items, def, scope);
+                }
+            }
+        }
+        scope.pop();
+    }
+
+    /// The first segment is looked up in the enclosing modules, innermost first; every further
+    /// segment in the module the previous one named.
+    fn resolve_theory_path(
+        &mut self,
+        scope: &[DefId],
+        segs: &[PathSegment],
+        span: Span,
+    ) -> Option<DefId> {
+        let mut cur: Option<Res> = None;
+        for (i, seg) in segs.iter().enumerate() {
+            let name = seg.ident.node;
+            let found = if i == 0 {
+                scope
+                    .iter()
+                    .rev()
+                    .find_map(|m| self.modules[m].names.get(&name).copied())
+            } else {
+                match cur {
+                    Some(Res::Def(DefKind::Module, m)) => {
+                        self.modules[&m].names.get(&name).copied()
+                    }
+                    _ => {
+                        let prev = segs[i - 1].ident;
+                        self.resolver
+                            .errors
+                            .push(ResolveErr::ExpectedModule(prev.node, prev.span));
+                        return None;
+                    }
+                }
+            };
+            let Some(res) = found else {
+                self.resolver.errors.push(ResolveErr::NotFound(
+                    name,
+                    Namespace::TheoryNS,
+                    seg.span,
+                ));
+                return None;
+            };
+            self.resolver.resolved.insert(seg.id, res);
+            cur = Some(res);
+        }
+        match cur {
+            Some(Res::Def(DefKind::Theory, def)) => Some(def),
+            _ => {
+                let last = segs.last().expect("non-empty path").ident;
+                self.resolver
+                    .errors
+                    .push(ResolveErr::ExpectedTheory(last.node, span));
+                None
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +286,12 @@ pub enum ResolveErr {
     NotFound(Symbol, Namespace, Span),
     NoRes(Span),
     InvalidStage(Symbol, Span),
+    /// A path in a `\\use` that should name a theory names something else.
+    ExpectedTheory(Symbol, Span),
+    /// A path segment followed by `::` that is not a module.
+    ExpectedModule(Symbol, Span),
+    /// The theory (named) uses itself, directly or through other theories.
+    CyclicUse(Symbol, Span),
 }
 
 impl ResolveErr {
@@ -50,6 +311,18 @@ impl ResolveErr {
                 )
             }
             ResolveErr::NoRes(_) => "No resolution found".to_string(),
+            ResolveErr::ExpectedTheory(sym, _) => {
+                format!("{} is not a theory", cx.interner.get(*sym))
+            }
+            ResolveErr::ExpectedModule(sym, _) => {
+                format!("{} is not a module", cx.interner.get(*sym))
+            }
+            ResolveErr::CyclicUse(sym, _) => {
+                format!(
+                    "Theory {} uses itself (cyclic \\use)",
+                    cx.interner.get(*sym)
+                )
+            }
             ResolveErr::InvalidStage(sym, _) => {
                 format!(
                     "Unknown stage {} (expected one of taclet, app, formula, sequent, history)",
@@ -65,6 +338,9 @@ impl ResolveErr {
             ResolveErr::NotFound(_, _, span) => span,
             ResolveErr::NoRes(span) => span,
             ResolveErr::InvalidStage(_, span) => span,
+            ResolveErr::ExpectedTheory(_, span) => span,
+            ResolveErr::ExpectedModule(_, span) => span,
+            ResolveErr::CyclicUse(_, span) => span,
         }
     }
 }
@@ -278,6 +554,11 @@ impl<'a, 'ast> Visit<'ast> for DefCollector<'a> {
         visit_file(self, x);
     }
 
+    fn visit_module(&mut self, x: &'ast raw::Module) {
+        self.create_def(x.id, Some(x.name.node), DefKind::Module);
+        visit_module(self, x);
+    }
+
     fn visit_theory(&mut self, x: &'ast crate::raw_theory::Theory) {
         self.create_def(x.id, Some(x.name.node), DefKind::Theory);
         visit_theory(self, x);
@@ -386,6 +667,8 @@ pub struct ScopeBuilder<'a, 'cx> {
     expected_ns: Namespace,
     theory_data: HashMap<DefId, TheoryData>,
     active_id: Option<NodeId>,
+    /// The theory each `\\use` leaf (by node id) imports from, found by the module pass.
+    use_targets: HashMap<NodeId, DefId>,
 }
 
 impl<'a, 'cx> ScopeBuilder<'a, 'cx> {
@@ -398,6 +681,7 @@ impl<'a, 'cx> ScopeBuilder<'a, 'cx> {
             expected_ns: Namespace::TheoryNS,
             theory_data: Default::default(),
             active_id: None,
+            use_targets: HashMap::new(),
         }
     }
 
@@ -496,9 +780,9 @@ impl<'a, 'cx> ScopeBuilder<'a, 'cx> {
         Res::Err
     }
 
-    fn add_imports(
-        path: &mut Vec<PathSegment>,
-        uk: &UseTreeKind,
+    /// Brings the names of the theory a `\\use` leaf names into the current scopes.
+    fn add_import_leaf(
+        tree: &UseTree,
         td: &TheoryData,
         id: NodeId,
         scopes: &mut PerNS<Vec<Scope>>,
@@ -511,32 +795,25 @@ impl<'a, 'cx> ScopeBuilder<'a, 'cx> {
             Namespace::SortNS,
             Namespace::CostNS,
         ];
-        match uk {
-            UseTreeKind::Simple(ident) => {
+        match &tree.kind {
+            UseTreeKind::Simple(rename) => {
+                let item = tree
+                    .prefix
+                    .segments
+                    .last()
+                    .expect("non-empty path")
+                    .ident
+                    .node;
                 let mut import_res = PerNS::default();
                 for ns in nss {
-                    if let Some(r) = td.scopes[ns].bindings.get(&path.last().unwrap().ident.node) {
+                    if let Some(r) = td.scopes[ns].bindings.get(&item) {
                         let s = scopes[ns].last_mut().unwrap();
-                        let ident = if let Some(i) = ident {
-                            i.node
-                        } else {
-                            path.last().unwrap().ident.node
-                        };
-                        s.bindings.insert(ident, *r);
+                        let name = rename.map_or(item, |i| i.node);
+                        s.bindings.insert(name, *r);
                         import_res[ns] = Some(*r);
                     }
                 }
                 import_res_map.insert(id, import_res);
-            }
-            UseTreeKind::Nested { items, .. } => {
-                let orig_len = path.len();
-                for (t, id) in items {
-                    path.extend(t.prefix.segments.iter().cloned());
-                    Self::add_imports(path, &t.kind, td, *id, scopes, import_res_map);
-                    for _ in orig_len..path.len() {
-                        path.pop();
-                    }
-                }
             }
             UseTreeKind::Glob => {
                 for ns in nss {
@@ -544,15 +821,35 @@ impl<'a, 'cx> ScopeBuilder<'a, 'cx> {
                     s.bindings.extend(td.scopes[ns].bindings.iter());
                 }
             }
+            UseTreeKind::Nested { .. } => unreachable!("only leaves import"),
         }
+    }
+
+    fn import_tree(&mut self, tree: &UseTree, id: NodeId) {
+        if let UseTreeKind::Nested { items, .. } = &tree.kind {
+            for (t, nid) in items {
+                self.import_tree(t, *nid);
+            }
+            return;
+        }
+        // A missing target was reported by the module pass.
+        let Some(def) = self.use_targets.get(&id).copied() else {
+            return;
+        };
+        let Some(td) = self.theory_data.get(&def) else {
+            return;
+        };
+        Self::add_import_leaf(
+            tree,
+            td,
+            id,
+            &mut self.scopes,
+            &mut self.resolver.import_res_map,
+        );
     }
 }
 
 impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
-    fn visit_file(&mut self, x: &'ast crate::raw_theory::File) {
-        self.with_scope(Namespace::TheoryNS, ScopeKind::File, |s| visit_file(s, x));
-    }
-
     fn visit_theory(&mut self, x: &'ast crate::raw_theory::Theory) {
         self.scopes[Namespace::OpNS].push(Scope::new(ScopeKind::Theory));
         self.scopes[Namespace::RuleSetNS].push(Scope::new(ScopeKind::Theory));
@@ -590,11 +887,6 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
             }
         }
         let def_id = self.resolver.node_id_to_def_id[&x.id].to_def_id();
-        self.add_res(
-            Namespace::TheoryNS,
-            x.name,
-            Res::Def(DefKind::Theory, def_id),
-        );
         self.theory_data.insert(def_id, theory);
     }
 
@@ -631,25 +923,8 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
     }
 
     fn visit_use_tree(&mut self, x: &'ast raw::UseTree) {
-        // Resolve theory
-        self.expected_ns = Namespace::TheoryNS;
-        self.visit_path(&x.prefix);
-        let Res::Def(DefKind::Theory, def_id) =
-            self.resolver.resolved[&x.prefix.segments.last().unwrap().id]
-        else {
-            panic!("Expected theory")
-        };
-        let td = &self.theory_data[&def_id];
-        let uk = &x.kind;
-        let id = self.active_id.take().unwrap();
-        Self::add_imports(
-            &mut x.prefix.segments.to_vec(),
-            uk,
-            td,
-            id,
-            &mut self.scopes,
-            &mut self.resolver.import_res_map,
-        );
+        let id = self.active_id.take().expect("use tree of an item");
+        self.import_tree(x, id);
     }
 
     fn visit_function_decl(&mut self, x: &'ast raw::FunctionDecl) {

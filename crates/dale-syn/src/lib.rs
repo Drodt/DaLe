@@ -21,6 +21,9 @@ pub use frontend::{
 pub struct ParserCtx {
     next_id: NodeId,
     interner: Interner<Symbol>,
+    /// Added to every span produced by the parser: the start of the file in the source map's
+    /// global offset space (0 for a single file).
+    base: usize,
 }
 
 impl Default for ParserCtx {
@@ -34,7 +37,17 @@ impl ParserCtx {
         Self {
             next_id: NodeId::ZERO,
             interner: Default::default(),
+            base: 0,
         }
+    }
+
+    /// Sets the global offset of the file that is parsed next.
+    pub fn set_base(&mut self, base: usize) {
+        self.base = base;
+    }
+
+    pub fn span(&self, start: usize, end: usize) -> raw_theory::Span {
+        raw_theory::Span(self.base + start, self.base + end)
     }
 
     pub fn intern(&mut self, s: &str) -> Symbol {
@@ -142,7 +155,10 @@ pub fn err_report(input: &str, e: ParseError<usize, Token<'_>, &str>) -> String 
 mod tests {
     use dale_util::arena::DroplessArena;
 
-    use crate::{ctx::Ctx, resolve::resolve};
+    use crate::{
+        ctx::{Ctx, FileTable},
+        resolve::resolve,
+    };
 
     use super::*;
 
@@ -238,8 +254,11 @@ mod tests {
             Ok(f) => f,
             Err(e) => panic!("{}", err_report(input, e)),
         };
-        assert_eq!(1, file.theories.len());
-        assert_eq!(3, file.theories[0].items.len());
+        assert_eq!(1, file.items.len());
+        let raw_theory::ModuleItem::Theory(t) = &file.items[0] else {
+            panic!("expected a theory")
+        };
+        assert_eq!(3, t.items.len());
     }
 
     /// Runs the whole pipeline on `input` (which must resolve) and returns the check results.
@@ -250,9 +269,11 @@ mod tests {
             Err(e) => panic!("{}", err_report(input, e)),
         };
         let ir_arena = DroplessArena::default();
+        let files = FileTable::default();
         let cx = Ctx {
             ir_arena: &ir_arena,
             interner: &ctx.interner,
+            files: &files,
         };
         let resolver = resolve(cx, &file);
         assert!(
@@ -525,12 +546,14 @@ mod tests {
             Err(e) => panic!("{}", err_report(&input, e)),
         };
 
-        assert_eq!(6, rusty.theories.len());
+        assert_eq!(6, rusty.items.len());
 
         let ir_arena = DroplessArena::default();
+        let files = FileTable::default();
         let cx = Ctx {
             ir_arena: &ir_arena,
             interner: &ctx.interner,
+            files: &files,
         };
         let resolver = resolve(cx, &rusty);
         if !resolver.errors.is_empty() {

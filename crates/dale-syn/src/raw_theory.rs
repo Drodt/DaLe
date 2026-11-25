@@ -28,7 +28,25 @@ pub type Ident = Spanned<Symbol>;
 #[derive(Debug, Clone)]
 pub struct File {
     pub id: NodeId,
-    pub theories: Vec<Theory>,
+    pub items: Vec<ModuleItem>,
+}
+
+/// What a file or a module contains.
+#[derive(Debug, Clone)]
+pub enum ModuleItem {
+    Theory(Theory),
+    Module(Module),
+}
+
+/// `\module Name { ... }` (inline) or `\module Name;` (`external`: the items come from the file
+/// `Name.theokey`, which the loader fills in; the parser leaves `items` empty).
+#[derive(Debug, Clone)]
+pub struct Module {
+    pub id: NodeId,
+    pub name: Ident,
+    pub span: Span,
+    pub external: bool,
+    pub items: Vec<ModuleItem>,
 }
 
 #[derive(Debug, Clone)]

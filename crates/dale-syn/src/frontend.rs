@@ -17,7 +17,7 @@
 //! every node has a span of its own.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt, fs, io,
     path::{Path, PathBuf},
 };
@@ -32,13 +32,14 @@ use lalrpop_util::ParseError;
 use crate::{
     ParserCtx,
     check::{self, CheckErr},
-    ctx::Ctx,
+    ctx::{Ctx, FileTable},
     dl_theory,
     ir::{
         self, CostItem, CostParam, CostTy, DefId, Expr, FileId, IrId, ItemId, LOCAL_FILE, Map,
-        Rule, RuleSetDecl, RuleSetRef, SchemaVarDecl, SortDecl, SortRef, Span, Term,
+        Module, Rule, RuleSetDecl, RuleSetRef, SchemaVarDecl, SortDecl, SortRef, Span, Term,
         visit::{self, Visit},
     },
+    raw_theory::{self, ModuleItem},
     resolve::resolve,
 };
 
@@ -57,6 +58,9 @@ pub struct LineCol {
 pub struct SourceFile {
     pub path: PathBuf,
     pub text: String,
+    /// Where the file starts in the global offset space of the parser's spans; set by
+    /// [`SourceMap::add`].
+    pub base: usize,
     /// Byte offset of the start of each line.
     line_starts: Vec<usize>,
 }
@@ -68,6 +72,7 @@ impl SourceFile {
         Self {
             path,
             text,
+            base: 0,
             line_starts,
         }
     }
@@ -113,9 +118,27 @@ pub struct SourceMap {
 }
 
 impl SourceMap {
-    pub fn add(&mut self, file: SourceFile) -> FileId {
+    pub fn add(&mut self, mut file: SourceFile) -> FileId {
+        // One extra offset between files, so that an end-of-file span stays in its file.
+        file.base = self.files.last().map_or(0, |f| f.base + f.text.len() + 1);
         self.files.push(file);
         FileId::new(self.files.len() - 1)
+    }
+
+    /// The table that turns global parser offsets into file-local spans.
+    pub fn table(&self) -> FileTable {
+        FileTable::new(
+            self.files
+                .iter()
+                .enumerate()
+                .map(|(i, f)| (f.base, FileId::new(i)))
+                .collect(),
+        )
+    }
+
+    /// Converts a span of the parser (global offsets) into a file-local one.
+    pub fn to_span(&self, raw: raw_theory::Span) -> Span {
+        self.table().span(raw)
     }
 
     pub fn file(&self, id: FileId) -> Option<&SourceFile> {
@@ -190,6 +213,8 @@ impl fmt::Display for Severity {
 /// The pass that reported a diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
+    /// Finding and reading the files of `\\module Name;` declarations.
+    Load,
     Parse,
     Resolve,
     Lower,
@@ -199,6 +224,7 @@ pub enum Phase {
 impl fmt::Display for Phase {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Phase::Load => "load",
             Phase::Parse => "parse",
             Phase::Resolve => "resolve",
             Phase::Lower => "lower",
@@ -289,6 +315,11 @@ impl<'ir> Visit<'ir> for SpanBuilder<'ir> {
         visit::visit_rule_set_ref(self, x);
     }
 
+    fn visit_module(&mut self, x: &'ir Module<'ir>) {
+        self.index.defs.insert(x.id, x.span);
+        visit::visit_module(self, x);
+    }
+
     fn visit_sort_decl(&mut self, x: &'ir SortDecl<'ir>) {
         self.index.defs.insert(x.id, x.span);
         visit::visit_sort_decl(self, x);
@@ -333,6 +364,8 @@ pub struct Parsed {
     /// The arena the IR is allocated in (later passes may allocate into it as well).
     pub arena: &'static DroplessArena,
     pub map: &'static Map<'static>,
+    /// The table that maps parser offsets to files (needed to lower further parser output).
+    pub files: &'static FileTable,
     /// Warnings of the front end (errors would have produced an [`Error`]).
     pub warnings: Vec<Diagnostic>,
 }
@@ -410,7 +443,9 @@ impl std::error::Error for Error {
 // Entry points
 // ----------------------------------------------------------------------------------------------
 
-/// Parses, resolves, lowers and checks the `.theokey` file at `path`.
+/// Parses, resolves, lowers and checks the `.theokey` file at `path`, and the files of all the
+/// modules it declares with `\module Name;` (looked up as `Name.theokey` in the directory of the
+/// file that declares them).
 pub fn parse(path: impl AsRef<Path>) -> Result<Parsed, Error> {
     let path = path.as_ref();
     let text = fs::read_to_string(path).map_err(|source| Error::Io {
@@ -420,12 +455,30 @@ pub fn parse(path: impl AsRef<Path>) -> Result<Parsed, Error> {
     parse_text(path.to_path_buf(), text)
 }
 
-/// Like [`parse`] for text that is already in memory; `path` is only used for display.
+/// Like [`parse`] for a root file whose text is already in memory; `path` names it for display
+/// and decides where its `\module Name;` files are looked up.
 pub fn parse_text(path: PathBuf, text: String) -> Result<Parsed, Error> {
-    let mut sources = SourceMap::default();
-    let file_id = sources.add(SourceFile::new(path, text));
-    debug_assert_eq!(file_id, LOCAL_FILE);
-    let mut diagnostics = Vec::new();
+    let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    let mut loader = Loader {
+        sources: SourceMap::default(),
+        pcx: ParserCtx::new(),
+        diagnostics: Vec::new(),
+        loaded: HashSet::new(),
+    };
+    loader
+        .loaded
+        .insert(fs::canonicalize(&path).unwrap_or_else(|_| path.clone()));
+    let raw = loader.parse_source(path, text);
+    let raw = raw.map(|mut file| {
+        loader.load_modules(&mut file.items, &dir);
+        file
+    });
+    let Loader {
+        sources,
+        pcx,
+        mut diagnostics,
+        ..
+    } = loader;
 
     macro_rules! fail {
         () => {
@@ -436,41 +489,29 @@ pub fn parse_text(path: PathBuf, text: String) -> Result<Parsed, Error> {
         };
     }
 
-    // Parse
-    let mut pcx = ParserCtx::new();
-    let raw = {
-        let input = &sources.file(file_id).expect("just added").text;
-        match dl_theory::FileParser::new().parse(&mut pcx, input) {
-            Ok(f) => Some(f),
-            Err(e) => {
-                diagnostics.push(parse_error(file_id, e));
-                None
-            }
-        }
-    };
     let Some(raw) = raw else { fail!() };
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        fail!()
+    }
 
     let arena: &'static DroplessArena = Box::leak(Box::default());
     let interner: &'static Interner<Symbol> = Box::leak(Box::new(pcx.interner));
+    let files: &'static FileTable = Box::leak(Box::new(sources.table()));
     let cx = Ctx {
         ir_arena: arena,
         interner,
+        files,
     };
 
     // Resolve
     let resolver = resolve(cx, &raw);
     if !resolver.errors.is_empty() {
         for e in &resolver.errors {
-            let s = e.span();
             diagnostics.push(Diagnostic {
                 severity: Severity::Error,
                 phase: Phase::Resolve,
                 message: e.format(cx),
-                span: Some(Span {
-                    file: file_id,
-                    start: s.0,
-                    end: s.1,
-                }),
+                span: Some(sources.to_span(*e.span())),
             });
         }
         fail!()
@@ -518,8 +559,85 @@ pub fn parse_text(path: PathBuf, text: String) -> Result<Parsed, Error> {
         interner,
         arena,
         map,
+        files,
         warnings: diagnostics,
     })
+}
+
+/// Reads and parses the files of a program.
+struct Loader {
+    sources: SourceMap,
+    pcx: ParserCtx,
+    diagnostics: Vec<Diagnostic>,
+    /// Canonical paths of the files read so far; a file may be the body of one module only,
+    /// which also rules out cycles.
+    loaded: HashSet<PathBuf>,
+}
+
+impl Loader {
+    fn error(&mut self, phase: Phase, message: String, span: Option<Span>) {
+        self.diagnostics.push(Diagnostic {
+            severity: Severity::Error,
+            phase,
+            message,
+            span,
+        });
+    }
+
+    fn parse_source(&mut self, path: PathBuf, text: String) -> Option<raw_theory::File> {
+        let id = self.sources.add(SourceFile::new(path, text));
+        let file = self.sources.file(id).expect("just added");
+        self.pcx.set_base(file.base);
+        match dl_theory::FileParser::new().parse(&mut self.pcx, &file.text) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                self.diagnostics.push(parse_error(id, e));
+                None
+            }
+        }
+    }
+
+    /// Fills in the items of every `\module Name;` below `items` from `dir/Name.theokey`.
+    fn load_modules(&mut self, items: &mut [ModuleItem], dir: &Path) {
+        for item in items {
+            let ModuleItem::Module(m) = item else {
+                continue;
+            };
+            if !m.external {
+                self.load_modules(&mut m.items, dir);
+                continue;
+            }
+            let name = self.pcx.get_symbol(m.name.node).to_string();
+            let span = Some(self.sources.to_span(m.name.span));
+            let path = dir.join(format!("{name}.theokey"));
+            let text = match fs::read_to_string(&path) {
+                Ok(t) => t,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    let msg = format!("module `{name}`: file `{}` not found", path.display());
+                    self.error(Phase::Load, msg, span);
+                    continue;
+                }
+                Err(e) => {
+                    let msg = format!("module `{name}`: cannot read `{}`: {e}", path.display());
+                    self.error(Phase::Load, msg, span);
+                    continue;
+                }
+            };
+            let key = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            if !self.loaded.insert(key) {
+                let msg = format!(
+                    "module `{name}`: file `{}` is already loaded (cyclic or repeated module)",
+                    path.display()
+                );
+                self.error(Phase::Load, msg, span);
+                continue;
+            }
+            if let Some(file) = self.parse_source(path, text) {
+                m.items = file.items;
+                self.load_modules(&mut m.items, dir);
+            }
+        }
+    }
 }
 
 fn parse_error(file: FileId, e: ParseError<usize, dl_theory::Token<'_>, &str>) -> Diagnostic {
@@ -557,8 +675,8 @@ mod tests {
     #[test]
     fn parses_the_example_file() {
         let p = parse("examples/RustyDL.theokey").unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(6, p.map.file.theories.len());
-        let first = p.map.file.theories[0];
+        assert_eq!(6, p.map.file.theories().len());
+        let first = p.map.file.theories()[0];
         assert_eq!("Prop", p.name(first.name.name));
         // Spans lead back to the text.
         assert_eq!("Prop", p.snippet(first.name.span));
@@ -607,6 +725,168 @@ mod tests {
         assert_eq!(1, p.warnings.len());
         assert_eq!(Severity::Warning, p.warnings[0].severity);
         assert!(p.warnings[0].span.is_some());
+    }
+
+    /// Files in a fresh temporary directory, removed on drop.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(files: &[(&str, &str)]) -> Self {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static N: AtomicUsize = AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "dale-syn-test-{}-{}",
+                std::process::id(),
+                N.fetch_add(1, Ordering::SeqCst)
+            ));
+            fs::create_dir_all(&dir).unwrap();
+            for (name, text) in files {
+                fs::write(dir.join(name), text).unwrap();
+            }
+            TempDir(dir)
+        }
+
+        fn path(&self, name: &str) -> PathBuf {
+            self.0.join(name)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    const PROP: &str = "\\theory Prop { \\sorts { \\top Any; \\formula Formula; } }";
+
+    fn failure_of(files: &[(&str, &str)]) -> Box<Failure> {
+        let dir = TempDir::new(files);
+        match parse(dir.path("root.theokey")) {
+            Err(Error::Invalid(f)) => f,
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn modules_in_other_files() {
+        let top = "\\theory Top { \\use Base::Prop::*; \\operators { \\rigid neg(Formula) -> Formula; } }";
+        // `Top` may come before or after the module it uses.
+        for root in [
+            format!("\\module Base;\n{top}"),
+            format!("{top}\n\\module Base;"),
+        ] {
+            let dir = TempDir::new(&[("root.theokey", &root), ("Base.theokey", PROP)]);
+            let p = parse(dir.path("root.theokey")).unwrap_or_else(|e| panic!("{e}"));
+            let theories = p.map.file.theories();
+            assert_eq!(2, theories.len());
+            let prop = theories
+                .iter()
+                .find(|t| p.name(t.name.name) == "Prop")
+                .unwrap();
+            // The span points into the file of the module, not into the root file.
+            assert_ne!(LOCAL_FILE, prop.name.span.file);
+            assert_eq!("Prop", p.snippet(prop.name.span));
+            let (path, lc) = p.sources.location(prop.name.span).unwrap();
+            assert!(path.ends_with("Base.theokey"));
+            assert_eq!(1, lc.line);
+        }
+    }
+
+    #[test]
+    fn nested_modules() {
+        let root = "\\module Outer { \\module Inner; \\theory A { \\use Inner::T::*; } }\n\
+                    \\theory R { \\use Outer::Inner::T::*; }";
+        let dir = TempDir::new(&[
+            ("root.theokey", root),
+            ("Inner.theokey", &PROP.replace("Prop", "T")),
+        ]);
+        let p = parse(dir.path("root.theokey")).unwrap_or_else(|e| panic!("{e}"));
+        let names: Vec<_> = p
+            .map
+            .file
+            .theories()
+            .iter()
+            .map(|t| p.name(t.name.name).to_string())
+            .collect();
+        assert_eq!(["T", "A", "R"], names[..]);
+    }
+
+    #[test]
+    fn missing_module_file() {
+        let f = failure_of(&[("root.theokey", "\\module Missing;")]);
+        let d = f.errors().next().unwrap();
+        assert_eq!(Phase::Load, d.phase);
+        assert!(d.message.contains("not found"), "{}", d.message);
+        assert_eq!("Missing", f.sources.snippet(d.span.unwrap()));
+    }
+
+    #[test]
+    fn modules_and_theories_share_a_namespace() {
+        let f = failure_of(&[("root.theokey", "\\theory X {}\n\\module X { }")]);
+        let d = f.errors().next().unwrap();
+        assert_eq!(Phase::Resolve, d.phase);
+        assert!(d.message.contains("Already an element"), "{}", d.message);
+        // Also for a module that lives in its own file.
+        let f = failure_of(&[
+            ("root.theokey", "\\theory X {}\n\\module X;"),
+            ("X.theokey", ""),
+        ]);
+        assert_eq!(Phase::Resolve, f.errors().next().unwrap().phase);
+        // The same name in different modules is fine.
+        let dir = TempDir::new(&[(
+            "root.theokey",
+            "\\theory X {}\n\\module M { \\theory X {} }",
+        )]);
+        parse(dir.path("root.theokey")).unwrap_or_else(|e| panic!("{e}"));
+    }
+
+    #[test]
+    fn module_files_cannot_load_themselves() {
+        let f = failure_of(&[
+            ("root.theokey", "\\module A;"),
+            ("A.theokey", "\\module A;"),
+        ]);
+        let d = f.errors().next().unwrap();
+        assert_eq!(Phase::Load, d.phase);
+        assert!(d.message.contains("already loaded"), "{}", d.message);
+    }
+
+    #[test]
+    fn use_cycles_are_errors() {
+        let f = failure_of(&[(
+            "root.theokey",
+            "\\theory X { \\use Y::*; }\n\\theory Y { \\use X::*; }",
+        )]);
+        let d = f.errors().next().unwrap();
+        assert_eq!(Phase::Resolve, d.phase);
+        assert!(d.message.contains("cyclic"), "{}", d.message);
+    }
+
+    #[test]
+    fn use_paths_must_name_theories() {
+        let f = failure_of(&[("root.theokey", "\\module M { }\n\\theory X { \\use M::*; }")]);
+        assert!(f.errors().next().unwrap().message.contains("not a theory"));
+        let f = failure_of(&[("root.theokey", "\\theory X { \\use Nope::*; }")]);
+        assert!(
+            f.errors()
+                .next()
+                .unwrap()
+                .message
+                .contains("Failed to resolve")
+        );
+    }
+
+    #[test]
+    fn errors_in_module_files_point_into_that_file() {
+        let f = failure_of(&[
+            ("root.theokey", "\\module Bad;"),
+            ("Bad.theokey", "\\theory T {\n  \\sorts { ??? }\n}"),
+        ]);
+        let d = f.errors().next().unwrap();
+        assert_eq!(Phase::Parse, d.phase);
+        let (path, lc) = f.sources.location(d.span.unwrap()).unwrap();
+        assert!(path.ends_with("Bad.theokey"));
+        assert_eq!(2, lc.line);
     }
 
     #[test]

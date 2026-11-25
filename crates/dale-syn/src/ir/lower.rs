@@ -29,7 +29,6 @@ struct LowerCtx<'ir> {
     cx: Ctx<'ir>,
     resolver: Resolver,
     arena: &'ir DroplessArena,
-    current_file_id: FileId,
     current_ir_id: IrId,
     node_id_to_ir_id: HashMap<NodeId, IrId>,
     items: HashMap<ItemId, &'ir Item<'ir>>,
@@ -43,7 +42,6 @@ impl<'ir> LowerCtx<'ir> {
             cx,
             resolver,
             arena: cx.ir_arena,
-            current_file_id: FileId::ZERO,
             current_ir_id: IrId::ZERO,
             node_id_to_ir_id: HashMap::default(),
             items: HashMap::default(),
@@ -59,11 +57,7 @@ impl<'ir> LowerCtx<'ir> {
     }
 
     fn lower_span(&self, span: &raw::Span) -> Span {
-        Span {
-            file: self.current_file_id,
-            start: span.0,
-            end: span.1,
-        }
+        self.cx.files.span(*span)
     }
 
     fn lower_ident(&self, ident: &raw::Ident) -> Ident {
@@ -82,12 +76,27 @@ impl<'ir> LowerCtx<'ir> {
     }
 
     fn lower_file(&mut self, file: raw::File) -> File<'ir> {
-        let theories = self
-            .arena
-            .alloc_from_iter(file.theories.iter().map(|t| self.lower_theory(t)));
+        let items = self.lower_module_items(&file.items);
         File {
             id: FileId::ZERO,
-            theories,
+            items,
+        }
+    }
+
+    fn lower_module_items(&mut self, items: &[raw::ModuleItem]) -> &'ir [ModuleItem<'ir>] {
+        self.arena.alloc_from_iter(items.iter().map(|i| match i {
+            raw::ModuleItem::Theory(t) => ModuleItem::Theory(self.lower_theory(t)),
+            raw::ModuleItem::Module(m) => ModuleItem::Module(self.lower_module(m)),
+        }))
+    }
+
+    fn lower_module(&mut self, module: &raw::Module) -> Module<'ir> {
+        Module {
+            id: self.resolver.def_id(module.id),
+            name: self.lower_ident(&module.name),
+            span: self.lower_span(&module.span),
+            external: module.external,
+            items: self.lower_module_items(&module.items),
         }
     }
 
