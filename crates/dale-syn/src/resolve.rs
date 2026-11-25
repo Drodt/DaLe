@@ -17,9 +17,9 @@ use crate::{
     },
 };
 
-pub fn resolve<'cx>(cx: Ctx<'cx>, file: &File) -> Resolver<'cx> {
-    let mut r = Resolver::new(cx);
-    collect_defs(cx, &mut r, file);
+pub fn resolve<'cx>(cx: Ctx<'cx>, file: &File) -> Resolver {
+    let mut r = Resolver::new();
+    collect_defs(&mut r, file);
     let mut sb = ScopeBuilder::new(cx, &mut r);
     sb.visit_file(file);
     r
@@ -196,8 +196,7 @@ impl<T> PerNS<Option<T>> {
     }
 }
 
-pub struct Resolver<'cx> {
-    cx: Ctx<'cx>,
+pub struct Resolver {
     node_id_to_def_id: HashMap<NodeId, LocalDefId>,
     next_def_id: LocalDefId,
     resolved: HashMap<NodeId, Res>,
@@ -205,10 +204,9 @@ pub struct Resolver<'cx> {
     pub errors: Vec<ResolveErr>,
 }
 
-impl<'cx> Resolver<'cx> {
-    pub fn new(cx: Ctx<'cx>) -> Self {
+impl Resolver {
+    pub fn new() -> Self {
         Self {
-            cx,
             node_id_to_def_id: HashMap::new(),
             next_def_id: LocalDefId::new(0),
             resolved: Default::default(),
@@ -230,8 +228,8 @@ impl<'cx> Resolver<'cx> {
     }
 }
 
-fn collect_defs<'cx>(cx: Ctx<'cx>, resolver: &mut Resolver<'cx>, file: &File) {
-    let mut coll = DefCollector::new(cx, resolver);
+fn collect_defs(resolver: &mut Resolver, file: &File) {
+    let mut coll = DefCollector::new(resolver);
     coll.visit_file(file);
 }
 
@@ -239,16 +237,14 @@ struct TheoryData {
     scopes: PerNS<Scope>,
 }
 
-pub struct DefCollector<'a, 'cx> {
-    cx: Ctx<'cx>,
-    resolver: &'a mut Resolver<'cx>,
+pub struct DefCollector<'a> {
+    resolver: &'a mut Resolver,
     in_operator_mode: bool,
 }
 
-impl<'a, 'cx> DefCollector<'a, 'cx> {
-    pub fn new(cx: Ctx<'cx>, resolver: &'a mut Resolver<'cx>) -> Self {
+impl<'a> DefCollector<'a> {
+    pub fn new(resolver: &'a mut Resolver) -> Self {
         Self {
-            cx,
             resolver,
             in_operator_mode: false,
         }
@@ -276,7 +272,7 @@ impl<'a, 'cx> DefCollector<'a, 'cx> {
     }
 }
 
-impl<'a, 'ast, 'cx> Visit<'ast> for DefCollector<'a, 'cx> {
+impl<'a, 'ast> Visit<'ast> for DefCollector<'a> {
     fn visit_file(&mut self, x: &'ast crate::raw_theory::File) {
         self.create_def(x.id, None, DefKind::File);
         visit_file(self, x);
@@ -385,7 +381,7 @@ impl<'a, 'ast, 'cx> Visit<'ast> for DefCollector<'a, 'cx> {
 pub struct ScopeBuilder<'a, 'cx> {
     cx: Ctx<'cx>,
     scopes: PerNS<Vec<Scope>>,
-    resolver: &'a mut Resolver<'cx>,
+    resolver: &'a mut Resolver,
     in_operator_context: bool,
     expected_ns: Namespace,
     theory_data: HashMap<DefId, TheoryData>,
@@ -393,7 +389,7 @@ pub struct ScopeBuilder<'a, 'cx> {
 }
 
 impl<'a, 'cx> ScopeBuilder<'a, 'cx> {
-    pub fn new(cx: Ctx<'cx>, resolver: &'a mut Resolver<'cx>) -> Self {
+    pub fn new(cx: Ctx<'cx>, resolver: &'a mut Resolver) -> Self {
         Self {
             cx,
             scopes: PerNS::default(),
@@ -403,24 +399,6 @@ impl<'a, 'cx> ScopeBuilder<'a, 'cx> {
             theory_data: Default::default(),
             active_id: None,
         }
-    }
-
-    fn op_ns_opt_mut(&mut self) -> Option<&mut Scope> {
-        self.scopes.op_ns.last_mut()
-    }
-
-    fn op_ns_mut(&mut self) -> &mut Scope {
-        self.op_ns_opt_mut()
-            .expect("operator/function/predicate scopes are not empty")
-    }
-
-    fn theory_ns_opt_mut(&mut self) -> Option<&mut Scope> {
-        self.scopes.theory_ns.last_mut()
-    }
-
-    fn theory_ns_mut(&mut self) -> &mut Scope {
-        self.theory_ns_opt_mut()
-            .expect("theory scopes are not empty")
     }
 
     fn with_scope<T>(

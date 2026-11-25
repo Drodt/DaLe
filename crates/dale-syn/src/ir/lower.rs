@@ -11,7 +11,7 @@ use crate::{
     resolve::Resolver,
 };
 
-pub fn lower<'ir>(file: raw::File, cx: Ctx<'ir>, resolver: Resolver<'ir>) -> (Map<'ir>, Vec<Span>) {
+pub fn lower<'ir>(file: raw::File, cx: Ctx<'ir>, resolver: Resolver) -> (Map<'ir>, Vec<Span>) {
     let mut lcx = LowerCtx::new(cx, resolver);
     let file = lcx.lower_file(file);
     (
@@ -27,7 +27,7 @@ pub fn lower<'ir>(file: raw::File, cx: Ctx<'ir>, resolver: Resolver<'ir>) -> (Ma
 
 struct LowerCtx<'ir> {
     cx: Ctx<'ir>,
-    resolver: Resolver<'ir>,
+    resolver: Resolver,
     arena: &'ir DroplessArena,
     current_file_id: FileId,
     current_ir_id: IrId,
@@ -38,7 +38,7 @@ struct LowerCtx<'ir> {
 }
 
 impl<'ir> LowerCtx<'ir> {
-    fn new(cx: Ctx<'ir>, resolver: Resolver<'ir>) -> Self {
+    fn new(cx: Ctx<'ir>, resolver: Resolver) -> Self {
         Self {
             cx,
             resolver,
@@ -211,7 +211,7 @@ impl<'ir> LowerCtx<'ir> {
                 ItemKind::Use(path, UseKind::Single(ident))
             }
             raw::UseTreeKind::Nested {
-                items: ref trees, ..
+                items: ref _trees, ..
             } => {
                 todo!()
             }

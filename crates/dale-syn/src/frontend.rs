@@ -346,14 +346,6 @@ impl Parsed {
     pub fn snippet(&self, span: Span) -> &str {
         self.sources.snippet(span)
     }
-
-    /// The context passes of this crate use.
-    pub(crate) fn ctx(&self) -> Ctx<'static> {
-        Ctx {
-            ir_arena: self.arena,
-            interner: self.interner,
-        }
-    }
 }
 
 impl fmt::Debug for Parsed {
