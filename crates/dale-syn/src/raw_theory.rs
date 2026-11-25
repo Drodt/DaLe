@@ -72,6 +72,7 @@ pub enum ItemKind {
     Axioms(),
     Rules(Rules),
     RuleSets(RuleSetDecls),
+    Costs(Vec<CostItem>),
 }
 
 #[derive(Debug, Clone)]
@@ -221,7 +222,7 @@ pub struct Rule {
     pub assumes: Option<Spanned<TermOrSeq>>,
     pub find: Option<Spanned<TermOrSeq>>,
     pub goal_specs: GoalSpecs,
-    pub rule_sets: Option<Spanned<Vec<(NodeId, Path)>>>,
+    pub rule_sets: Option<Spanned<Vec<RuleSetRef>>>,
     pub display_name: Option<Spanned<Symbol>>,
     pub span: Span,
 }
@@ -262,34 +263,183 @@ pub struct GoalSpec {
     pub span: Span,
 }
 
+/// A reference to a ruleset from a rule's `\rulesets(...)` list, optionally with arguments for
+/// the ruleset's parameters: `\rulesets(alpha, apply_equation(r))`.
+#[derive(Debug, Clone)]
+pub struct RuleSetRef {
+    pub id: NodeId,
+    pub path: Path,
+    pub args: Vec<Expr>,
+}
+
 pub type RuleSetDecls = Vec<RuleSetDecl>;
 
+/// `[extend|override] name[(params)] [\stage(s)] { [guard g;]* cost }`
 #[derive(Debug, Clone)]
 pub struct RuleSetDecl {
     pub id: NodeId,
+    pub span: Span,
+    pub ext: Option<RuleSetExt>,
     pub name: Ident,
-    pub cost: Cost,
+    pub params: Vec<CostParam>,
+    /// The stage the author asserts for the body (checked after name resolution).
+    pub stage: Option<Ident>,
+    pub guards: Vec<Guard>,
+    pub body: Expr,
+}
+
+/// A ruleset declaration that refers to a ruleset of a used theory instead of introducing a new one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuleSetExt {
+    /// `extend alpha { ... }`: the cost is added to the inherited cost.
+    Extend,
+    /// `override alpha { ... }`: the cost replaces the inherited cost.
+    Override,
+}
+
+/// `guard no_duplicate_app;`: a veto that is not part of the cost value.
+#[derive(Debug, Clone)]
+pub struct Guard {
+    pub id: NodeId,
+    pub span: Span,
+    pub path: Path,
+}
+
+/// An item of a `\costs { ... }` block.
+#[derive(Debug, Clone)]
+pub struct CostItem {
+    pub id: NodeId,
+    pub span: Span,
+    pub kind: CostItemKind,
 }
 
 #[derive(Debug, Clone)]
-pub enum Cost {
-    Top,
+pub enum CostItemKind {
+    /// `const NAME: Ty = expr;`
+    Const {
+        name: Ident,
+        ty: CostTy,
+        value: Expr,
+    },
+    /// `fn name(params) -> Ty { expr }`
+    Fn {
+        name: Ident,
+        params: Vec<CostParam>,
+        ret: CostTy,
+        body: Expr,
+    },
+}
+
+/// `name: Ty`, a parameter of a ruleset or a cost function.
+#[derive(Debug, Clone)]
+pub struct CostParam {
+    pub id: NodeId,
+    pub span: Span,
+    pub name: Ident,
+    pub ty: CostTy,
+}
+
+/// A type in the cost language: `Cost`, `Int`, `Float`, `Bool`, `Op`, `Sort`, `Term` or
+/// `Term<S>` (a term of sort `S`). The name is checked after parsing, only `arg` is a sort
+/// that is resolved as such.
+#[derive(Debug, Clone)]
+pub struct CostTy {
+    pub id: NodeId,
+    pub span: Span,
+    pub name: Ident,
+    pub arg: Option<Sort>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Expr {
+    pub id: NodeId,
+    pub span: Span,
+    pub kind: ExprKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum ExprKind {
     Int(i64),
-    Add(Box<Cost>, Box<Cost>),
-    If(Box<BoolCost>, Box<Cost>, Box<Cost>),
-    Ident(Ident),
-    Call(Ident, Vec<CostArg>),
-}
-
-#[derive(Debug, Clone)]
-pub enum BoolCost {
-    Cost(Cost),
-    And(Box<BoolCost>, Box<BoolCost>),
-    Or(Box<BoolCost>, Box<BoolCost>),
-}
-
-#[derive(Debug, Clone)]
-pub enum CostArg {
-    Cost(Cost),
     Float(f64),
+    /// The infinite cost.
+    Top,
+    /// A constant, a parameter, a local, a builtin or (inside a rule's `\rulesets`) a schema
+    /// variable or operator; see `resolve.rs` for the lookup order.
+    Path(Path),
+    Call(Path, Vec<CallArg>),
+    Unary(UnOp, Box<Expr>),
+    Binary(BinOp, Box<Expr>, Box<Expr>),
+    If(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// `let name = value; body`. The `NodeId` identifies the binder.
+    Let(NodeId, Ident, Box<Expr>, Box<Expr>),
+}
+
+#[derive(Debug, Clone)]
+pub enum CallArg {
+    Expr(Expr),
+    /// `x in generator: body`, as in `sum(x in sub_terms(find): body)`.
+    Binder(Binder),
+}
+
+#[derive(Debug, Clone)]
+pub struct Binder {
+    pub id: NodeId,
+    pub span: Span,
+    pub var: Ident,
+    pub generator: Expr,
+    pub body: Expr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UnOp {
+    Neg,
+    Not,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Lt,
+    Le,
+    Eq,
+    Ne,
+    Ge,
+    Gt,
+    And,
+    Or,
+}
+
+pub fn mk_binary(id: NodeId, span: Span, op: BinOp, a: Expr, b: Expr) -> Expr {
+    Expr {
+        id,
+        span,
+        kind: ExprKind::Binary(op, Box::new(a), Box::new(b)),
+    }
+}
+
+/// Negation; numeric literals are folded so `-5000` is a plain `Int(-5000)`.
+pub fn mk_neg(id: NodeId, span: Span, e: Expr) -> Expr {
+    let kind = match e.kind {
+        ExprKind::Int(i) => ExprKind::Int(-i),
+        ExprKind::Float(f) => ExprKind::Float(-f),
+        other => ExprKind::Unary(
+            UnOp::Neg,
+            Box::new(Expr {
+                id: e.id,
+                span: e.span,
+                kind: other,
+            }),
+        ),
+    };
+    Expr { id, span, kind }
+}
+
+pub fn mk_not(id: NodeId, span: Span, e: Expr) -> Expr {
+    Expr {
+        id,
+        span,
+        kind: ExprKind::Unary(UnOp::Not, Box::new(e)),
+    }
 }

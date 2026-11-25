@@ -6,6 +6,7 @@ use dale_util::symbol::{Interner, Symbol};
 use crate::{dl_theory::Token, raw_theory::NodeId};
 
 pub mod check;
+pub mod cost;
 mod ctx;
 pub mod ir;
 pub mod raw_theory;
@@ -159,6 +160,82 @@ mod tests {
         assert_eq!(3, theory.items.len());
     }
 
+    fn parse_expr(input: &str) -> crate::raw_theory::Expr {
+        let mut ctx = ParserCtx::new();
+        match dl_theory::ExprParser::new().parse(&mut ctx, input) {
+            Ok(e) => e,
+            Err(e) => panic!("{}", err_report(input, e)),
+        }
+    }
+
+    #[test]
+    fn cost_expr_precedence() {
+        use crate::raw_theory::{BinOp, ExprKind};
+
+        // `-5000` is a literal, not a negation.
+        assert!(matches!(parse_expr("-5000").kind, ExprKind::Int(-5000)));
+        // `a - b` is a subtraction (the minus is not part of the literal).
+        assert!(matches!(
+            parse_expr("a -5").kind,
+            ExprKind::Binary(BinOp::Sub, ..)
+        ));
+        // * binds tighter than +, && tighter than ||, comparison tighter than &&.
+        match parse_expr("1 + 2 * 3").kind {
+            ExprKind::Binary(BinOp::Add, _, rhs) => {
+                assert!(matches!(rhs.kind, ExprKind::Binary(BinOp::Mul, ..)))
+            }
+            k => panic!("{k:?}"),
+        }
+        match parse_expr("a || b && c < 3").kind {
+            ExprKind::Binary(BinOp::Or, _, rhs) => match rhs.kind {
+                ExprKind::Binary(BinOp::And, _, cmp) => {
+                    assert!(matches!(cmp.kind, ExprKind::Binary(BinOp::Lt, ..)))
+                }
+                k => panic!("{k:?}"),
+            },
+            k => panic!("{k:?}"),
+        }
+        parse_expr("if a && !b { top } else { Cost::REWRITE + scale(count_max_d_path, 10.0) }");
+        parse_expr("let x = find_depth; x + 1");
+        parse_expr("sum(t in sub_terms(find): if is_literal(t) { 1 } else { 0 })");
+    }
+
+    #[test]
+    fn rulesets_and_costs() {
+        let mut ctx = ParserCtx::new();
+        let input = r#"
+          \theory T {
+            \costs {
+              const BASE: Cost = -5000;
+              fn base(extra: Cost, t: Term<Any>) -> Cost { BASE + extra }
+            }
+            \rulesets {
+              plain { Cost::CLOSE }
+              param(t: Term<Any>, k: Int) \stage(app) {
+                guard no_duplicate_app;
+                if k < 3 { base(0, t) } else { top }
+              }
+              extend plain { Cost::CLOSE }
+              override other { 0 }
+            }
+            \rules {
+              r {
+                \schemaVar b: Any;
+                \find(b)
+                \replacewith(b)
+                \rulesets(plain, param(b, 3))
+              }
+            }
+          }
+        "#;
+        let file = match dl_theory::FileParser::new().parse(&mut ctx, input) {
+            Ok(f) => f,
+            Err(e) => panic!("{}", err_report(input, e)),
+        };
+        assert_eq!(1, file.theories.len());
+        assert_eq!(3, file.theories[0].items.len());
+    }
+
     #[test]
     fn rustydl() {
         use std::fs::read_to_string;
@@ -191,7 +268,7 @@ mod tests {
                 e.format(cx)
             )
         }
-        let (mut ir, errors) = ir::lower::lower(rusty, cx, resolver);
+        let (ir, errors) = ir::lower::lower(rusty, cx, resolver);
         if !errors.is_empty() {
             let e = &errors[0];
             let start = e.start;

@@ -1,10 +1,21 @@
 use std::str::FromStr;
 
+use lalrpop_util::ParseError;
+
 use dale_util::symbol::Symbol;
 
 use crate::{raw_theory::*, ParserCtx};
 
 grammar(ctx: &mut ParserCtx);
+
+// Whitespace and `// line comments` are skipped; all other tokens keep lalrpop's default
+// priorities (fixed strings before regular expressions).
+match {
+    r"\s*" => {},
+    r"//[^\n]*" => {},
+} else {
+    _
+}
 
 pub File: File = {
     <theories:Theory*> => File { id: ctx.id(), theories }
@@ -31,7 +42,8 @@ ItemKind: ItemKind = {
     "\\predicates" "{" <node:PredicateDecl*> "}" => ItemKind::Predicates(node),
     "\\axioms" "{" "}" => ItemKind::Axioms(),
     "\\rules" "{" <rules:Rule*> "}" => ItemKind::Rules(rules),
-    "\\rulesets" "{" <rs:RuleSetDecl*> "}" => ItemKind::RuleSets(rs)
+    "\\rulesets" "{" <rs:RuleSetDecl*> "}" => ItemKind::RuleSets(rs),
+    "\\costs" "{" <cs:CostItem*> "}" => ItemKind::Costs(cs)
 }
 
 UseTree: UseTree = {
@@ -368,7 +380,14 @@ GoalSpecName: Ident = {
 
 CloseGoal: Span = <start: @L> "\\closegoal" <end: @R> => Span(start, end);
 
-RuleRuleSets: Spanned<Vec<(NodeId, Path)>> = <start: @L> "\\rulesets" "(" <rs:Comma<Path>> ")" <end: @R> => Spanned::new(rs.into_iter().map(|r| (ctx.id(), r)).collect(), Span(start, end));
+RuleRuleSets: Spanned<Vec<RuleSetRef>> = <start: @L> "\\rulesets" "(" <rs:Comma<RuleSetRef>> ")" <end: @R> => Spanned::new(rs, Span(start, end));
+
+// A ruleset a rule belongs to, optionally instantiating the ruleset's parameters:
+//   \rulesets(alpha, apply_equation(r))
+RuleSetRef: RuleSetRef = {
+    <p:Path> => RuleSetRef { id: ctx.id(), path: p, args: vec![] },
+    <p:Path> "(" <args:Comma<Expr>> ")" => RuleSetRef { id: ctx.id(), path: p, args },
+}
 
 DisplayName: Spanned<Symbol> = <start: @L> "\\displayname" <l:StringValue> <end: @R> => Spanned::new(ctx.intern(&l), Span(start, end));
 
@@ -377,39 +396,172 @@ TermOrSeq: TermOrSeq = {
     <t:Term> => TermOrSeq::Term(t)
 }
 
-RuleSetDecl: RuleSetDecl = <i:Ident> "{" <c:Cost> "}" => RuleSetDecl {id: ctx.id(), name: i, cost: c};
+// ---------------------------------------------------------------------------
+// Rulesets and costs
+// ---------------------------------------------------------------------------
 
 StringValue: String = <l:r#""[^\n"]+""#> => l[1..l.len() - 1].into();
 
-Cost: Cost = {
-    <c1:Cost> "+" <c2:CostAtom> => Cost::Add(Box::new(c1), Box::new(c2)),
-    <a:CostAtom> => a
+// \rulesets { [extend|override] name[(params)] [\stage(s)] { [guard g;]* cost } }
+RuleSetDecl: RuleSetDecl = {
+    <start: @L> <ext:RuleSetExt?> <name:Ident> <params:RuleSetParams?> <stage:StageAssert?>
+    "{" <guards:Guard*> <body:Expr> "}" <end: @R> => RuleSetDecl {
+        id: ctx.id(),
+        span: Span(start, end),
+        ext,
+        name,
+        params: params.unwrap_or_default(),
+        stage,
+        guards,
+        body
+    }
 }
 
-CostAtom: Cost = {
-    "if" <cond:BoolCost> "{" <c1:Cost> "}" "else" "{" <c2:Cost> "}" => Cost::If(Box::new(cond), Box::new(c1), Box::new(c2)),
-    "top" => Cost::Top,
-    <i:Int> => Cost::Int(i),
-    <id:Ident> => Cost::Ident(id),
-    <id:Ident> "(" <args:Comma<CostArg>> ")" => Cost::Call(id, args),
+RuleSetExt: RuleSetExt = {
+    "extend" => RuleSetExt::Extend,
+    "override" => RuleSetExt::Override,
 }
 
-BoolCost: BoolCost = {
-    #[precedence(level = "0")]
-    <c:Cost> => BoolCost::Cost(c),
-    #[precedence(level = "1")]
-    #[assoc(side = "left")]
-    <c1:BoolCost> "&&" <c2:BoolCost> => BoolCost::And(Box::new(c1), Box::new(c2)),
-    #[precedence(level = "2")]
-    #[assoc(side = "left")]
-    <c1:BoolCost> "||" <c2:BoolCost> => BoolCost::Or(Box::new(c1), Box::new(c2))
+RuleSetParams: Vec<CostParam> = "(" <Comma<CostParam>> ")";
+
+StageAssert: Ident = "\\stage" "(" <Ident> ")";
+
+Guard: Guard = <start: @L> "guard" <p:Path> ";" <end: @R> => Guard {
+    id: ctx.id(),
+    span: Span(start, end),
+    path: p
+};
+
+// \costs { const NAME: Ty = expr; fn name(params) -> Ty { expr } }
+CostItem: CostItem = {
+    <start: @L> "const" <name:Ident> ":" <ty:CostTy> "=" <value:Expr> ";" <end: @R> => CostItem {
+        id: ctx.id(),
+        span: Span(start, end),
+        kind: CostItemKind::Const { name, ty, value }
+    },
+    <start: @L> "fn" <name:Ident> "(" <params:Comma<CostParam>> ")" "->" <ret:CostTy> "{" <body:Expr> "}" <end: @R> => CostItem {
+        id: ctx.id(),
+        span: Span(start, end),
+        kind: CostItemKind::Fn { name, params, ret, body }
+    },
 }
 
-CostArg: CostArg = {
-    <c:Cost> => CostArg::Cost(c),
-    <f:Float> => CostArg::Float(f)
+CostParam: CostParam = <start: @L> <name:Ident> ":" <ty:CostTy> <end: @R> => CostParam {
+    id: ctx.id(),
+    span: Span(start, end),
+    name,
+    ty
+};
+
+// Cost, Int, Float, Bool, Op, Sort, Term<S>, ... (checked after parsing).
+CostTy: CostTy = {
+    <start: @L> <name:Ident> <end: @R> => CostTy {
+        id: ctx.id(),
+        span: Span(start, end),
+        name,
+        arg: None
+    },
+    <start: @L> <name:Ident> "<" <arg:Sort> ">" <end: @R> => CostTy {
+        id: ctx.id(),
+        span: Span(start, end),
+        name,
+        arg: Some(arg)
+    },
 }
 
-Int: i64 = <s:r"-?[0-9]+"> => i64::from_str(s).unwrap();
+// ---------------------------------------------------------------------------
+// Cost expressions
+//
+// Precedence, lowest to highest:  let  <  ||  <  &&  <  comparison  <  + -  <  *  <  unary - !
+// Comparison is non-associative.
+// ---------------------------------------------------------------------------
 
-Float: f64 = <s:r"-?[0-9]*\.[0-9]+"> => f64::from_str(s).unwrap();
+pub Expr: Expr = {
+    <start: @L> "let" <name:Ident> "=" <value:Expr> ";" <body:Expr> <end: @R> => Expr {
+        id: ctx.id(),
+        span: Span(start, end),
+        kind: ExprKind::Let(ctx.id(), name, Box::new(value), Box::new(body))
+    },
+    OrExpr,
+}
+
+OrExpr: Expr = {
+    <start: @L> <a:OrExpr> "||" <b:AndExpr> <end: @R> => mk_binary(ctx.id(), Span(start, end), BinOp::Or, a, b),
+    AndExpr,
+}
+
+AndExpr: Expr = {
+    <start: @L> <a:AndExpr> "&&" <b:CmpExpr> <end: @R> => mk_binary(ctx.id(), Span(start, end), BinOp::And, a, b),
+    CmpExpr,
+}
+
+CmpExpr: Expr = {
+    <start: @L> <a:AddExpr> <op:CmpOp> <b:AddExpr> <end: @R> => mk_binary(ctx.id(), Span(start, end), op, a, b),
+    AddExpr,
+}
+
+CmpOp: BinOp = {
+    "<" => BinOp::Lt,
+    "<=" => BinOp::Le,
+    "==" => BinOp::Eq,
+    "!=" => BinOp::Ne,
+    ">=" => BinOp::Ge,
+    ">" => BinOp::Gt,
+}
+
+AddExpr: Expr = {
+    <start: @L> <a:AddExpr> <op:AddOp> <b:MulExpr> <end: @R> => mk_binary(ctx.id(), Span(start, end), op, a, b),
+    MulExpr,
+}
+
+AddOp: BinOp = {
+    "+" => BinOp::Add,
+    "-" => BinOp::Sub,
+}
+
+MulExpr: Expr = {
+    <start: @L> <a:MulExpr> "*" <b:UnaryExpr> <end: @R> => mk_binary(ctx.id(), Span(start, end), BinOp::Mul, a, b),
+    UnaryExpr,
+}
+
+UnaryExpr: Expr = {
+    <start: @L> "-" <e:UnaryExpr> <end: @R> => mk_neg(ctx.id(), Span(start, end), e),
+    <start: @L> "!" <e:UnaryExpr> <end: @R> => mk_not(ctx.id(), Span(start, end), e),
+    AtomExpr,
+}
+
+AtomExpr: Expr = {
+    <start: @L> <i:Int> <end: @R> => Expr { id: ctx.id(), span: Span(start, end), kind: ExprKind::Int(i) },
+    <start: @L> <f:Float> <end: @R> => Expr { id: ctx.id(), span: Span(start, end), kind: ExprKind::Float(f) },
+    <start: @L> "top" <end: @R> => Expr { id: ctx.id(), span: Span(start, end), kind: ExprKind::Top },
+    <start: @L> <p:Path> <end: @R> => Expr { id: ctx.id(), span: Span(start, end), kind: ExprKind::Path(p) },
+    <start: @L> <p:Path> "(" <args:Comma<CallArg>> ")" <end: @R> => Expr {
+        id: ctx.id(),
+        span: Span(start, end),
+        kind: ExprKind::Call(p, args)
+    },
+    <start: @L> "if" <c:Expr> "{" <a:Expr> "}" "else" "{" <b:Expr> "}" <end: @R> => Expr {
+        id: ctx.id(),
+        span: Span(start, end),
+        kind: ExprKind::If(Box::new(c), Box::new(a), Box::new(b))
+    },
+    "(" <Expr> ")",
+}
+
+// Either a plain argument or a binder `x in generator: body` (used by sum/any/all).
+CallArg: CallArg = {
+    <e:Expr> => CallArg::Expr(e),
+    <start: @L> <var:Ident> "in" <generator:Expr> ":" <body:Expr> <end: @R> => CallArg::Binder(Binder {
+        id: ctx.id(),
+        span: Span(start, end),
+        var,
+        generator,
+        body
+    }),
+}
+
+Int: i64 = <s:r"[0-9]+"> =>? i64::from_str(s)
+    .map_err(|_| ParseError::User { error: "integer literal out of range" });
+
+Float: f64 = <s:r"[0-9]+\.[0-9]+"> =>? f64::from_str(s)
+    .map_err(|_| ParseError::User { error: "invalid float literal" });

@@ -5,13 +5,15 @@ use dale_util::symbol::Symbol;
 use indexmap::IndexMap;
 
 use crate::{
+    cost::{self, Stage},
     ctx::Ctx,
-    ir::{DefId, DefKind, LocalDefId, Res, TermKind},
+    ir::{DefId, DefKind, LocalDefId, Res},
     raw_theory::{
-        self as raw, File, Ident, NodeId, PathSegment, Span, UseTreeKind, Visit, visit_file,
-        visit_function_decl, visit_generic_param, visit_item, visit_item_kind,
-        visit_predicate_decl, visit_rule, visit_rule_sets, visit_schema_var_decl, visit_sort,
-        visit_sort_decl, visit_term, visit_theory, visit_use_tree,
+        self as raw, File, Ident, NodeId, PathSegment, Span, UseTreeKind, Visit, visit_binder,
+        visit_cost_item, visit_cost_param, visit_expr, visit_file, visit_function_decl,
+        visit_generic_param, visit_item, visit_item_kind, visit_predicate_decl, visit_rule,
+        visit_rule_set_decl, visit_schema_var_decl, visit_sort, visit_sort_decl, visit_term,
+        visit_theory, visit_use_tree,
     },
 };
 
@@ -28,6 +30,7 @@ pub enum ResolveErr {
     DuplicateName(Symbol, Span),
     NotFound(Symbol, Namespace, Span),
     NoRes(Span),
+    InvalidStage(Symbol, Span),
 }
 
 impl ResolveErr {
@@ -47,6 +50,12 @@ impl ResolveErr {
                 )
             }
             ResolveErr::NoRes(_) => "No resolution found".to_string(),
+            ResolveErr::InvalidStage(sym, _) => {
+                format!(
+                    "Unknown stage {} (expected one of taclet, app, formula, sequent, history)",
+                    cx.interner.get(*sym)
+                )
+            }
         }
     }
 
@@ -55,6 +64,7 @@ impl ResolveErr {
             ResolveErr::DuplicateName(_, span) => span,
             ResolveErr::NotFound(_, _, span) => span,
             ResolveErr::NoRes(span) => span,
+            ResolveErr::InvalidStage(_, span) => span,
         }
     }
 }
@@ -90,6 +100,8 @@ pub enum Namespace {
     RuleNS,
     RuleSetNS,
     SortNS,
+    /// Constants, functions, parameters and locals of the cost language.
+    CostNS,
 }
 
 impl Display for Namespace {
@@ -100,6 +112,7 @@ impl Display for Namespace {
             Namespace::RuleNS => "rule",
             Namespace::RuleSetNS => "rule sets",
             Namespace::SortNS => "sort",
+            Namespace::CostNS => "cost",
         };
         Display::fmt(s, f)
     }
@@ -112,6 +125,7 @@ pub struct PerNS<T> {
     pub rule_ns: T,
     pub rule_set_ns: T,
     pub sort_ns: T,
+    pub cost_ns: T,
 }
 
 impl<T> ops::Index<Namespace> for PerNS<T> {
@@ -124,6 +138,7 @@ impl<T> ops::Index<Namespace> for PerNS<T> {
             Namespace::RuleNS => &self.rule_ns,
             Namespace::RuleSetNS => &self.rule_set_ns,
             Namespace::SortNS => &self.sort_ns,
+            Namespace::CostNS => &self.cost_ns,
         }
     }
 }
@@ -136,6 +151,7 @@ impl<T> ops::IndexMut<Namespace> for PerNS<T> {
             Namespace::RuleNS => &mut self.rule_ns,
             Namespace::RuleSetNS => &mut self.rule_set_ns,
             Namespace::SortNS => &mut self.sort_ns,
+            Namespace::CostNS => &mut self.cost_ns,
         }
     }
 }
@@ -148,6 +164,7 @@ impl<T> PerNS<T> {
             rule_ns: f(self.rule_ns),
             rule_set_ns: f(self.rule_set_ns),
             sort_ns: f(self.sort_ns),
+            cost_ns: f(self.cost_ns),
         }
     }
 }
@@ -163,6 +180,7 @@ where
             rule_ns: Default::default(),
             rule_set_ns: Default::default(),
             sort_ns: Default::default(),
+            cost_ns: Default::default(),
         }
     }
 }
@@ -174,6 +192,7 @@ impl<T> PerNS<Option<T>> {
             && self.rule_ns.is_none()
             && self.rule_set_ns.is_none()
             && self.sort_ns.is_none()
+            && self.cost_ns.is_none()
     }
 }
 
@@ -333,6 +352,33 @@ impl<'a, 'ast, 'cx> Visit<'ast> for DefCollector<'a, 'cx> {
 
     fn visit_rule_set_decl(&mut self, x: &'ast raw::RuleSetDecl) {
         self.create_def(x.id, Some(x.name.node), DefKind::RuleSet);
+        visit_rule_set_decl(self, x);
+    }
+
+    fn visit_cost_item(&mut self, x: &'ast raw::CostItem) {
+        let (name, kind) = match &x.kind {
+            raw::CostItemKind::Const { name, .. } => (name.node, DefKind::CostConst),
+            raw::CostItemKind::Fn { name, .. } => (name.node, DefKind::CostFn),
+        };
+        self.create_def(x.id, Some(name), kind);
+        visit_cost_item(self, x);
+    }
+
+    fn visit_cost_param(&mut self, x: &'ast raw::CostParam) {
+        self.create_def(x.id, Some(x.name.node), DefKind::CostParam);
+        visit_cost_param(self, x);
+    }
+
+    fn visit_expr(&mut self, x: &'ast raw::Expr) {
+        if let raw::ExprKind::Let(id, name, ..) = &x.kind {
+            self.create_def(*id, Some(name.node), DefKind::CostLocal);
+        }
+        visit_expr(self, x);
+    }
+
+    fn visit_binder(&mut self, x: &'ast raw::Binder) {
+        self.create_def(x.id, Some(x.var.node), DefKind::CostLocal);
+        visit_binder(self, x);
     }
 }
 
@@ -414,6 +460,64 @@ impl<'a, 'cx> ScopeBuilder<'a, 'cx> {
         };
     }
 
+    /// Resolves a path in a cost expression.
+    ///
+    /// Lookup order, first hit wins:
+    /// 1. `Cost::NAME` is a predefined cost band;
+    /// 2. locals, parameters, constants and functions (`CostNS`);
+    /// 3. for a callee: builtins, then operators; otherwise operators (and schema variables of
+    ///    the enclosing rule), then builtins. So `has_op(t, all)` finds the operator `all`,
+    ///    while `all(x in ...: ...)` is the builtin.
+    fn resolve_expr_path(&mut self, id: NodeId, path: &raw::Path, is_callee: bool) {
+        let last = path.segments.last().expect("non-empty path");
+        let res = self.lookup_expr_path(path, is_callee);
+        self.resolver.resolved.insert(last.id, res);
+        self.resolver.resolved.insert(id, res);
+    }
+
+    fn lookup_expr_path(&mut self, path: &raw::Path, is_callee: bool) -> Res {
+        let interner = self.cx.interner;
+        if path.segments.len() == 2 {
+            let first = path.segments[0].ident.node;
+            let second = path.segments[1].ident.node;
+            if interner.get(first) == "Cost" && cost::cost_const(interner.get(second)).is_some() {
+                return Res::Builtin(second);
+            }
+        }
+        if path.segments.len() != 1 {
+            self.resolver.errors.push(ResolveErr::NotFound(
+                path.segments.last().unwrap().ident.node,
+                Namespace::CostNS,
+                path.span,
+            ));
+            return Res::Err;
+        }
+        let name = path.segments[0].ident.node;
+        let lookup = |scopes: &Vec<Scope>| {
+            scopes
+                .iter()
+                .rev()
+                .find_map(|sc| sc.bindings.get(&name).copied())
+        };
+        if let Some(res) = lookup(&self.scopes[Namespace::CostNS]) {
+            return res;
+        }
+        let is_builtin = cost::builtin(interner.get(name)).is_some();
+        if is_callee && is_builtin {
+            return Res::Builtin(name);
+        }
+        if let Some(res) = lookup(&self.scopes[Namespace::OpNS]) {
+            return res;
+        }
+        if is_builtin {
+            return Res::Builtin(name);
+        }
+        self.resolver
+            .errors
+            .push(ResolveErr::NotFound(name, Namespace::CostNS, path.span));
+        Res::Err
+    }
+
     fn add_imports(
         path: &mut Vec<PathSegment>,
         uk: &UseTreeKind,
@@ -427,6 +531,7 @@ impl<'a, 'cx> ScopeBuilder<'a, 'cx> {
             Namespace::RuleNS,
             Namespace::RuleSetNS,
             Namespace::SortNS,
+            Namespace::CostNS,
         ];
         match uk {
             UseTreeKind::Simple(ident) => {
@@ -475,6 +580,7 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         self.scopes[Namespace::RuleSetNS].push(Scope::new(ScopeKind::Theory));
         self.scopes[Namespace::SortNS].push(Scope::new(ScopeKind::Theory));
         self.scopes[Namespace::RuleNS].push(Scope::new(ScopeKind::Theory));
+        self.scopes[Namespace::CostNS].push(Scope::new(ScopeKind::Theory));
         visit_theory(self, x);
         let mut theory = TheoryData {
             scopes: PerNS {
@@ -483,6 +589,7 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
                 rule_ns: Scope::new(ScopeKind::Theory),
                 rule_set_ns: Scope::new(ScopeKind::Theory),
                 sort_ns: Scope::new(ScopeKind::Theory),
+                cost_ns: Scope::new(ScopeKind::Theory),
             },
         };
         for ns in [
@@ -490,6 +597,7 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
             Namespace::RuleSetNS,
             Namespace::RuleNS,
             Namespace::SortNS,
+            Namespace::CostNS,
         ] {
             while let Some(scope) = self.scopes[ns].pop() {
                 if scope.kind == ScopeKind::File {
@@ -528,6 +636,7 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
                 Namespace::RuleNS,
                 Namespace::RuleSetNS,
                 Namespace::SortNS,
+                Namespace::CostNS,
             ];
 
             for ns in nss {
@@ -596,14 +705,143 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
     }
 
     fn visit_rule_set_decl(&mut self, x: &'ast raw::RuleSetDecl) {
-        self.add_res(
-            Namespace::RuleSetNS,
-            x.name,
-            Res::Def(
-                DefKind::RuleSet,
-                self.resolver.node_id_to_def_id[&x.id].to_def_id(),
+        if let Some(st) = &x.stage {
+            if Stage::parse(self.cx.interner.get(st.node)).is_none() {
+                self.resolver
+                    .errors
+                    .push(ResolveErr::InvalidStage(st.node, st.span));
+            }
+        }
+
+        // Parameters, guards and body live in their own scope.
+        self.with_scope(Namespace::CostNS, ScopeKind::Normal, |this| {
+            for p in &x.params {
+                this.visit_cost_param(p);
+            }
+            for g in &x.guards {
+                this.visit_guard(g);
+            }
+            this.visit_expr(&x.body);
+        });
+
+        let def = self.resolver.node_id_to_def_id[&x.id].to_def_id();
+        match x.ext {
+            None => self.add_res(
+                Namespace::RuleSetNS,
+                x.name,
+                Res::Def(DefKind::RuleSet, def),
             ),
-        );
+            Some(_) => {
+                // `extend` / `override` refer to a ruleset that is already in scope.
+                let found = self.scopes[Namespace::RuleSetNS]
+                    .iter()
+                    .rev()
+                    .find_map(|sc| sc.bindings.get(&x.name.node).copied());
+                let res = match found {
+                    Some(res) => res,
+                    None => {
+                        self.resolver.errors.push(ResolveErr::NotFound(
+                            x.name.node,
+                            Namespace::RuleSetNS,
+                            x.name.span,
+                        ));
+                        Res::Err
+                    }
+                };
+                self.resolver.resolved.insert(x.id, res);
+            }
+        }
+    }
+
+    fn visit_guard(&mut self, x: &'ast raw::Guard) {
+        let seg = x.path.segments.last().expect("non-empty path");
+        let res =
+            if x.path.segments.len() == 1 && cost::is_guard(self.cx.interner.get(seg.ident.node)) {
+                Res::Builtin(seg.ident.node)
+            } else {
+                self.resolver.errors.push(ResolveErr::NotFound(
+                    seg.ident.node,
+                    Namespace::CostNS,
+                    x.path.span,
+                ));
+                Res::Err
+            };
+        self.resolver.resolved.insert(seg.id, res);
+        self.resolver.resolved.insert(x.id, res);
+    }
+
+    fn visit_cost_item(&mut self, x: &'ast raw::CostItem) {
+        let def = self.resolver.node_id_to_def_id[&x.id].to_def_id();
+        match &x.kind {
+            raw::CostItemKind::Const { name, ty, value } => {
+                self.visit_cost_ty(ty);
+                self.visit_expr(value);
+                self.add_res(Namespace::CostNS, *name, Res::Def(DefKind::CostConst, def));
+            }
+            raw::CostItemKind::Fn {
+                name,
+                params,
+                ret,
+                body,
+            } => {
+                // The function is added after its body: no recursion.
+                self.with_scope(Namespace::CostNS, ScopeKind::Normal, |this| {
+                    for p in params {
+                        this.visit_cost_param(p);
+                    }
+                    this.visit_cost_ty(ret);
+                    this.visit_expr(body);
+                });
+                self.add_res(Namespace::CostNS, *name, Res::Def(DefKind::CostFn, def));
+            }
+        }
+    }
+
+    fn visit_cost_param(&mut self, x: &'ast raw::CostParam) {
+        self.visit_cost_ty(&x.ty);
+        let def = self.resolver.node_id_to_def_id[&x.id].to_def_id();
+        self.add_res(Namespace::CostNS, x.name, Res::Def(DefKind::CostParam, def));
+    }
+
+    fn visit_expr(&mut self, x: &'ast raw::Expr) {
+        match &x.kind {
+            raw::ExprKind::Int(_) | raw::ExprKind::Float(_) | raw::ExprKind::Top => {}
+            raw::ExprKind::Path(p) => self.resolve_expr_path(x.id, p, false),
+            raw::ExprKind::Call(p, args) => {
+                self.resolve_expr_path(x.id, p, true);
+                for a in args {
+                    self.visit_call_arg(a);
+                }
+            }
+            raw::ExprKind::Unary(_, e) => self.visit_expr(e),
+            raw::ExprKind::Binary(_, a, b) => {
+                self.visit_expr(a);
+                self.visit_expr(b);
+            }
+            raw::ExprKind::If(c, a, b) => {
+                self.visit_expr(c);
+                self.visit_expr(a);
+                self.visit_expr(b);
+            }
+            raw::ExprKind::Let(id, name, value, body) => {
+                self.visit_expr(value);
+                let def = self.resolver.node_id_to_def_id[id].to_def_id();
+                self.with_scope(Namespace::CostNS, ScopeKind::Normal, |this| {
+                    this.add_res(Namespace::CostNS, *name, Res::Def(DefKind::CostLocal, def));
+                    this.visit_expr(body);
+                });
+            }
+        }
+    }
+
+    fn visit_binder(&mut self, x: &'ast raw::Binder) {
+        // The generator does not see the bound variable.
+        self.visit_expr(&x.generator);
+        let def = self.resolver.node_id_to_def_id[&x.id].to_def_id();
+        self.with_scope(Namespace::CostNS, ScopeKind::Normal, |this| {
+            this.add_res(Namespace::CostNS, x.var, Res::Def(DefKind::CostLocal, def));
+            this.visit_expr(&x.body);
+        });
     }
 
     fn visit_predicate_decl(&mut self, x: &'ast raw::PredicateDecl) {
@@ -689,16 +927,16 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
         );
     }
 
-    fn visit_rule_sets(&mut self, x: &'ast raw::Spanned<Vec<(NodeId, raw::Path)>>) {
+    fn visit_rule_set_ref(&mut self, x: &'ast raw::RuleSetRef) {
         let old_ns = self.expected_ns;
         self.expected_ns = Namespace::RuleSetNS;
-        visit_rule_sets(self, x);
+        self.visit_path(&x.path);
         self.expected_ns = old_ns;
-        for (id, path) in x.node.iter() {
-            self.resolver.resolved.insert(
-                *id,
-                self.resolver.resolved[&path.segments.last().unwrap().id],
-            );
+        let res = self.resolver.resolved[&x.path.segments.last().unwrap().id];
+        self.resolver.resolved.insert(x.id, res);
+        // The arguments are evaluated in the scope of the rule (schema variables, `find`, ...).
+        for a in &x.args {
+            self.visit_expr(a);
         }
     }
 

@@ -5,6 +5,7 @@ use smallvec::{SmallVec, smallvec};
 
 use super::*;
 use crate::{
+    cost::Stage,
     ctx::Ctx,
     raw_theory::{self as raw, NodeId},
     resolve::Resolver,
@@ -25,6 +26,7 @@ pub fn lower<'ir>(file: raw::File, cx: Ctx<'ir>, resolver: Resolver<'ir>) -> (Ma
 }
 
 struct LowerCtx<'ir> {
+    cx: Ctx<'ir>,
     resolver: Resolver<'ir>,
     arena: &'ir DroplessArena,
     current_file_id: FileId,
@@ -38,6 +40,7 @@ struct LowerCtx<'ir> {
 impl<'ir> LowerCtx<'ir> {
     fn new(cx: Ctx<'ir>, resolver: Resolver<'ir>) -> Self {
         Self {
+            cx,
             resolver,
             arena: cx.ir_arena,
             current_file_id: FileId::ZERO,
@@ -171,6 +174,10 @@ impl<'ir> LowerCtx<'ir> {
                 self.arena
                     .alloc_from_iter(rule_sets.iter().map(|r| self.lower_rule_set_decl(r))),
             ),
+            raw::ItemKind::Costs(items) => ItemKind::Costs(
+                self.arena
+                    .alloc_from_iter(items.iter().map(|c| self.lower_cost_item(c))),
+            ),
         }
     }
 
@@ -220,6 +227,7 @@ impl<'ir> LowerCtx<'ir> {
                         rule_ns: None,
                         rule_set_ns: None,
                         sort_ns: None,
+                        cost_ns: None,
                     },
                     Res::Def(DefKind::Operator | DefKind::Pred | DefKind::Fn, _) => PerNS {
                         op_ns: Some(res),
@@ -227,6 +235,7 @@ impl<'ir> LowerCtx<'ir> {
                         rule_ns: None,
                         rule_set_ns: None,
                         sort_ns: None,
+                        cost_ns: None,
                     },
                     Res::Def(DefKind::Sort | DefKind::DataType, _) => PerNS {
                         op_ns: None,
@@ -234,6 +243,7 @@ impl<'ir> LowerCtx<'ir> {
                         rule_ns: None,
                         rule_set_ns: None,
                         sort_ns: Some(res),
+                        cost_ns: None,
                     },
                     Res::Def(DefKind::Rule, _) => PerNS {
                         op_ns: None,
@@ -241,6 +251,7 @@ impl<'ir> LowerCtx<'ir> {
                         rule_ns: Some(res),
                         rule_set_ns: None,
                         sort_ns: None,
+                        cost_ns: None,
                     },
                     Res::Def(DefKind::RuleSet, _) => PerNS {
                         op_ns: None,
@@ -248,6 +259,15 @@ impl<'ir> LowerCtx<'ir> {
                         rule_ns: None,
                         rule_set_ns: Some(res),
                         sort_ns: None,
+                        cost_ns: None,
+                    },
+                    Res::Def(DefKind::CostConst | DefKind::CostFn, _) => PerNS {
+                        op_ns: None,
+                        theory_ns: None,
+                        rule_ns: None,
+                        rule_set_ns: None,
+                        sort_ns: None,
+                        cost_ns: Some(res),
                     },
                     Res::Err => {
                         let err = Some(Res::Err);
@@ -257,6 +277,7 @@ impl<'ir> LowerCtx<'ir> {
                             rule_ns: err,
                             rule_set_ns: err,
                             sort_ns: err,
+                            cost_ns: err,
                         }
                     }
                     _ => panic!("Invalid use"),
@@ -282,6 +303,7 @@ impl<'ir> LowerCtx<'ir> {
                 rule_ns: err,
                 rule_set_ns: err,
                 sort_ns: err,
+                cost_ns: err,
             };
         }
         per_ns
@@ -411,12 +433,12 @@ impl<'ir> LowerCtx<'ir> {
             .as_ref()
             .map(|s| (self.lower_span(&s.span), self.lower_term_or_seq(&s.node)));
         let goal_specs = self.lower_goal_specs(&r.goal_specs);
-        let rule_sets: Option<(Span, &[Path<'_>])> = r.rule_sets.as_ref().map(|rs| {
+        let rule_sets: Option<(Span, &[RuleSetRef<'_>])> = r.rule_sets.as_ref().map(|rs| {
             (
                 self.lower_span(&rs.span),
                 self.arena
-                    .alloc_from_iter(rs.node.iter().map(|r| self.lower_path(&r.1, r.0)))
-                    as &[Path],
+                    .alloc_from_iter(rs.node.iter().map(|r| self.lower_rule_set_ref(r)))
+                    as &[RuleSetRef],
             )
         });
         let display_name = r.display_name.as_ref().map(|i| self.lower_ident(i));
@@ -632,9 +654,174 @@ impl<'ir> LowerCtx<'ir> {
         sv
     }
 
-    fn lower_rule_set_decl(&mut self, r: &raw::RuleSetDecl) -> RuleSetDecl {
+    fn lower_rule_set_ref(&mut self, r: &raw::RuleSetRef) -> RuleSetRef<'ir> {
+        let id = self.lower_node_id(r.id);
+        let path = self.lower_path(&r.path, r.id);
+        let args = self
+            .arena
+            .alloc_from_iter(r.args.iter().map(|a| self.lower_expr(a)));
+        RuleSetRef { id, path, args }
+    }
+
+    fn lower_rule_set_decl(&mut self, r: &raw::RuleSetDecl) -> RuleSetDecl<'ir> {
         let id = self.resolver.def_id(r.id);
         let name = self.lower_ident(&r.name);
-        RuleSetDecl { id, name }
+        let span = self.lower_span(&r.span);
+        let ext = r.ext;
+        let base = if r.ext.is_some() {
+            self.resolver.get_res(r.id)
+        } else {
+            None
+        };
+        let params = self
+            .arena
+            .alloc_from_iter(r.params.iter().map(|p| self.lower_cost_param(p)));
+        // An invalid stage name was already reported by the resolver.
+        let stage = r.stage.as_ref().map(|s| {
+            (
+                self.lower_span(&s.span),
+                Stage::parse(self.cx.interner.get(s.node)).unwrap_or(Stage::HISTORY),
+            )
+        });
+        let guards = self
+            .arena
+            .alloc_from_iter(r.guards.iter().map(|g| self.lower_path(&g.path, g.id)));
+        let body = self.arena.alloc(self.lower_expr(&r.body));
+        RuleSetDecl {
+            id,
+            name,
+            span,
+            ext,
+            base,
+            params,
+            stage,
+            guards,
+            body,
+        }
+    }
+
+    fn lower_cost_item(&mut self, c: &raw::CostItem) -> CostItem<'ir> {
+        let id = self.resolver.def_id(c.id);
+        let span = self.lower_span(&c.span);
+        let (name, kind) = match &c.kind {
+            raw::CostItemKind::Const { name, ty, value } => {
+                let name = self.lower_ident(name);
+                let ty = self.lower_cost_ty(ty);
+                let value = self.arena.alloc(self.lower_expr(value));
+                (name, CostItemKind::Const { ty, value })
+            }
+            raw::CostItemKind::Fn {
+                name,
+                params,
+                ret,
+                body,
+            } => {
+                let name = self.lower_ident(name);
+                let params = self
+                    .arena
+                    .alloc_from_iter(params.iter().map(|p| self.lower_cost_param(p)));
+                let ret = self.lower_cost_ty(ret);
+                let body = self.arena.alloc(self.lower_expr(body));
+                (name, CostItemKind::Fn { params, ret, body })
+            }
+        };
+        let item = CostItem {
+            id,
+            span,
+            name,
+            kind,
+        };
+        self.defs.insert(id, Def::CostItem(item));
+        item
+    }
+
+    fn lower_cost_param(&mut self, p: &raw::CostParam) -> CostParam<'ir> {
+        let id = self.resolver.def_id(p.id);
+        let span = self.lower_span(&p.span);
+        let name = self.lower_ident(&p.name);
+        let ty = self.lower_cost_ty(&p.ty);
+        let param = CostParam { id, span, name, ty };
+        self.defs.insert(id, Def::CostParam(param));
+        param
+    }
+
+    fn lower_cost_ty(&mut self, t: &raw::CostTy) -> CostTy<'ir> {
+        let id = self.lower_node_id(t.id);
+        let span = self.lower_span(&t.span);
+        let name = self.lower_ident(&t.name);
+        let arg = t.arg.as_ref().map(|s| {
+            let sort_ref: &'ir SortRef<'ir> = self.arena.alloc(self.lower_sort_ref(s));
+            sort_ref
+        });
+        CostTy {
+            id,
+            span,
+            name,
+            arg,
+        }
+    }
+
+    fn lower_expr(&mut self, e: &raw::Expr) -> Expr<'ir> {
+        let id = self.lower_node_id(e.id);
+        let span = self.lower_span(&e.span);
+        let kind = match &e.kind {
+            raw::ExprKind::Int(i) => ExprKind::Int(*i),
+            raw::ExprKind::Float(f) => ExprKind::Float(*f),
+            raw::ExprKind::Top => ExprKind::Top,
+            raw::ExprKind::Path(path) => {
+                ExprKind::Path(self.arena.alloc(self.lower_path(path, e.id)))
+            }
+            raw::ExprKind::Call(path, args) => ExprKind::Call(
+                self.arena.alloc(self.lower_path(path, e.id)),
+                self.arena
+                    .alloc_from_iter(args.iter().map(|a| self.lower_call_arg(a))),
+            ),
+            raw::ExprKind::Unary(op, x) => {
+                ExprKind::Unary(*op, self.arena.alloc(self.lower_expr(x)))
+            }
+            raw::ExprKind::Binary(op, a, b) => ExprKind::Binary(
+                *op,
+                self.arena.alloc(self.lower_expr(a)),
+                self.arena.alloc(self.lower_expr(b)),
+            ),
+            raw::ExprKind::If(c, a, b) => ExprKind::If(
+                self.arena.alloc(self.lower_expr(c)),
+                self.arena.alloc(self.lower_expr(a)),
+                self.arena.alloc(self.lower_expr(b)),
+            ),
+            raw::ExprKind::Let(def_node, name, value, body) => {
+                let def = self.resolver.def_id(*def_node);
+                let name = self.lower_ident(name);
+                self.defs.insert(def, Def::CostLocal(name));
+                ExprKind::Let {
+                    def,
+                    name,
+                    value: self.arena.alloc(self.lower_expr(value)),
+                    body: self.arena.alloc(self.lower_expr(body)),
+                }
+            }
+        };
+        Expr { id, span, kind }
+    }
+
+    fn lower_call_arg(&mut self, a: &raw::CallArg) -> CallArg<'ir> {
+        match a {
+            raw::CallArg::Expr(e) => CallArg::Expr(self.lower_expr(e)),
+            raw::CallArg::Binder(b) => {
+                let def = self.resolver.def_id(b.id);
+                let span = self.lower_span(&b.span);
+                let var = self.lower_ident(&b.var);
+                self.defs.insert(def, Def::CostLocal(var));
+                let generator = self.arena.alloc(self.lower_expr(&b.generator));
+                let body = self.arena.alloc(self.lower_expr(&b.body));
+                CallArg::Binder(Binder {
+                    def,
+                    span,
+                    var,
+                    generator,
+                    body,
+                })
+            }
+        }
     }
 }

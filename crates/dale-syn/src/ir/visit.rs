@@ -74,8 +74,15 @@ create_visitor_traits! {
   seq: Seq<'ir>,
   goal_specs: GoalSpecs<'ir>,
   goal_spec: GoalSpec<'ir>,
-  rule_sets: [Path<'ir>],
-  rule_set_decl: RuleSetDecl
+  rule_sets: [RuleSetRef<'ir>],
+  rule_set_ref: RuleSetRef<'ir>,
+  rule_set_decl: RuleSetDecl<'ir>,
+  cost_item: CostItem<'ir>,
+  cost_param: CostParam<'ir>,
+  cost_ty: CostTy<'ir>,
+  expr: Expr<'ir>,
+  call_arg: CallArg<'ir>,
+  binder: Binder<'ir>
 }
 
 pub fn visit_file<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a File) {
@@ -155,6 +162,11 @@ pub fn visit_item_kind<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a ItemKind) {
         ItemKind::RuleSets(rule_set_decls) => {
             for d in *rule_set_decls {
                 v.visit_rule_set_decl(d);
+            }
+        }
+        ItemKind::Costs(cost_items) => {
+            for c in *cost_items {
+                v.visit_cost_item(c);
             }
         }
     }
@@ -338,13 +350,109 @@ pub fn visit_goal_spec<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a GoalSpec<'a>
     }
 }
 
-pub fn visit_rule_sets<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a [Path<'a>]) {
-    for p in x {
-        v.visit_path(p);
+pub fn visit_rule_sets<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a [RuleSetRef<'a>]) {
+    for r in x {
+        v.visit_rule_set_ref(r);
     }
 }
 
-pub fn visit_rule_set_decl<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a RuleSetDecl) {
+pub fn visit_rule_set_ref<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a RuleSetRef<'a>) {
+    v.visit_id(&x.id);
+    v.visit_path(&x.path);
+    for a in x.args {
+        v.visit_expr(a);
+    }
+}
+
+pub fn visit_rule_set_decl<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a RuleSetDecl<'a>) {
     v.visit_def_id(&x.id);
     v.visit_ident(&x.name);
+    for p in x.params {
+        v.visit_cost_param(p);
+    }
+    for g in x.guards {
+        v.visit_path(g);
+    }
+    v.visit_expr(x.body);
+}
+
+pub fn visit_cost_item<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a CostItem<'a>) {
+    v.visit_def_id(&x.id);
+    v.visit_ident(&x.name);
+    match &x.kind {
+        CostItemKind::Const { ty, value } => {
+            v.visit_cost_ty(ty);
+            v.visit_expr(value);
+        }
+        CostItemKind::Fn { params, ret, body } => {
+            for p in *params {
+                v.visit_cost_param(p);
+            }
+            v.visit_cost_ty(ret);
+            v.visit_expr(body);
+        }
+    }
+}
+
+pub fn visit_cost_param<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a CostParam<'a>) {
+    v.visit_def_id(&x.id);
+    v.visit_ident(&x.name);
+    v.visit_cost_ty(&x.ty);
+}
+
+pub fn visit_cost_ty<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a CostTy<'a>) {
+    v.visit_id(&x.id);
+    v.visit_ident(&x.name);
+    if let Some(a) = x.arg {
+        v.visit_sort_ref(a);
+    }
+}
+
+pub fn visit_expr<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Expr<'a>) {
+    v.visit_id(&x.id);
+    match &x.kind {
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Top => {}
+        ExprKind::Path(p) => v.visit_path(p),
+        ExprKind::Call(p, args) => {
+            v.visit_path(p);
+            for a in *args {
+                v.visit_call_arg(a);
+            }
+        }
+        ExprKind::Unary(_, e) => v.visit_expr(e),
+        ExprKind::Binary(_, a, b) => {
+            v.visit_expr(a);
+            v.visit_expr(b);
+        }
+        ExprKind::If(c, a, b) => {
+            v.visit_expr(c);
+            v.visit_expr(a);
+            v.visit_expr(b);
+        }
+        ExprKind::Let {
+            def,
+            name,
+            value,
+            body,
+        } => {
+            v.visit_def_id(def);
+            v.visit_ident(name);
+            v.visit_expr(value);
+            v.visit_expr(body);
+        }
+    }
+}
+
+pub fn visit_call_arg<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a CallArg<'a>) {
+    match x {
+        CallArg::Expr(e) => v.visit_expr(e),
+        CallArg::Binder(b) => v.visit_binder(b),
+    }
+}
+
+pub fn visit_binder<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Binder<'a>) {
+    v.visit_def_id(&x.def);
+    v.visit_ident(&x.var);
+    v.visit_expr(x.generator);
+    v.visit_expr(x.body);
 }

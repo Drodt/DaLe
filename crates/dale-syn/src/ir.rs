@@ -4,7 +4,9 @@ use dale_index::Idx;
 use dale_macros::newtype_index;
 use dale_util::symbol::Symbol;
 
-use crate::{check::Sort, resolve::PerNS};
+use crate::{check::Sort, cost::Stage, resolve::PerNS};
+
+pub use crate::raw_theory::{BinOp, RuleSetExt, UnOp};
 
 pub mod lower;
 pub mod visit;
@@ -125,6 +127,12 @@ pub enum Def<'ir> {
     PredDecl(PredicateDecl<'ir>),
     SchemaVar(SchemaVarDecl<'ir>),
     GenParam(GenericParam<'ir>),
+    /// A `const` or `fn` of a `\costs` block.
+    CostItem(CostItem<'ir>),
+    /// A parameter of a ruleset or of a cost function.
+    CostParam(CostParam<'ir>),
+    /// A `let` or binder variable of a cost expression.
+    CostLocal(Ident),
 }
 
 impl<'ir> Def<'ir> {
@@ -180,7 +188,8 @@ pub enum ItemKind<'ir> {
     Predicates(&'ir [PredicateDecl<'ir>]),
     Axioms(),
     Rules(&'ir [Rule<'ir>]),
-    RuleSets(&'ir [RuleSetDecl]),
+    RuleSets(&'ir [RuleSetDecl<'ir>]),
+    Costs(&'ir [CostItem<'ir>]),
 }
 
 pub type UsePath<'ir> = Path<'ir, PerNS<Option<Res>>>;
@@ -299,7 +308,7 @@ pub struct Rule<'ir> {
     pub assumes: Option<(Span, TermOrSeq<'ir>)>,
     pub find: Option<(Span, TermOrSeq<'ir>)>,
     pub goal_specs: GoalSpecs<'ir>,
-    pub rule_sets: Option<(Span, &'ir [Path<'ir>])>,
+    pub rule_sets: Option<(Span, &'ir [RuleSetRef<'ir>])>,
     pub display_name: Option<Ident>,
     pub span: Span,
 }
@@ -340,15 +349,118 @@ pub struct GoalSpec<'ir> {
     pub span: Span,
 }
 
+/// A ruleset a rule belongs to, with the arguments for the ruleset's parameters.
 #[derive(Debug, Clone, Copy)]
-pub struct RuleSetDecl {
+pub struct RuleSetRef<'ir> {
+    pub id: IrId,
+    pub path: Path<'ir>,
+    pub args: &'ir [Expr<'ir>],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RuleSetDecl<'ir> {
     pub id: DefId,
     pub name: Ident,
+    pub span: Span,
+    /// `extend` / `override`: this declaration changes the ruleset `base` of a used theory
+    /// instead of introducing a new one.
+    pub ext: Option<RuleSetExt>,
+    pub base: Option<Res>,
+    pub params: &'ir [CostParam<'ir>],
+    /// The asserted stage of the body (`\stage(...)`), if any.
+    pub stage: Option<(Span, Stage)>,
+    /// Vetoes (builtin guards, e.g. `no_duplicate_app`) that are not part of the cost.
+    pub guards: &'ir [Path<'ir>],
+    pub body: &'ir Expr<'ir>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CostItem<'ir> {
+    pub id: DefId,
+    pub span: Span,
+    pub name: Ident,
+    pub kind: CostItemKind<'ir>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CostItemKind<'ir> {
+    Const {
+        ty: CostTy<'ir>,
+        value: &'ir Expr<'ir>,
+    },
+    Fn {
+        params: &'ir [CostParam<'ir>],
+        ret: CostTy<'ir>,
+        body: &'ir Expr<'ir>,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CostParam<'ir> {
+    pub id: DefId,
+    pub span: Span,
+    pub name: Ident,
+    pub ty: CostTy<'ir>,
+}
+
+/// `Cost`, `Int`, `Float`, `Bool`, `Op`, `Sort`, `Term` or `Term<S>`; `arg` is the sort `S`.
+#[derive(Debug, Clone, Copy)]
+pub struct CostTy<'ir> {
+    pub id: IrId,
+    pub span: Span,
+    pub name: Ident,
+    pub arg: Option<&'ir SortRef<'ir>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Expr<'ir> {
+    pub id: IrId,
+    pub span: Span,
+    pub kind: ExprKind<'ir>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ExprKind<'ir> {
+    Int(i64),
+    Float(f64),
+    /// The infinite cost.
+    Top,
+    /// Resolved to a cost constant / function, a parameter, a local, a builtin, or (in the
+    /// argument of a rule's `\rulesets`) a schema variable or operator.
+    Path(&'ir Path<'ir>),
+    Call(&'ir Path<'ir>, &'ir [CallArg<'ir>]),
+    Unary(UnOp, &'ir Expr<'ir>),
+    Binary(BinOp, &'ir Expr<'ir>, &'ir Expr<'ir>),
+    If(&'ir Expr<'ir>, &'ir Expr<'ir>, &'ir Expr<'ir>),
+    Let {
+        def: DefId,
+        name: Ident,
+        value: &'ir Expr<'ir>,
+        body: &'ir Expr<'ir>,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CallArg<'ir> {
+    Expr(Expr<'ir>),
+    Binder(Binder<'ir>),
+}
+
+/// `x in generator: body`
+#[derive(Debug, Clone, Copy)]
+pub struct Binder<'ir> {
+    pub def: DefId,
+    pub span: Span,
+    pub var: Ident,
+    pub generator: &'ir Expr<'ir>,
+    pub body: &'ir Expr<'ir>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Res {
     Def(DefKind, DefId),
+    /// A builtin of the cost language (a function, a constant `Cost::NAME`, or a guard).
+    Builtin(Symbol),
     Err,
 }
 
@@ -367,4 +479,8 @@ pub enum DefKind {
     ConstParam,
     SchemaVar,
     RuleSet,
+    CostConst,
+    CostFn,
+    CostParam,
+    CostLocal,
 }

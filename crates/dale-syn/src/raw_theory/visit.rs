@@ -58,8 +58,16 @@ create_visitor_traits! {
   seq: Seq,
   goal_specs: GoalSpecs,
   goal_spec: GoalSpec,
-  rule_sets: Spanned<Vec<(NodeId, Path)>>,
-  rule_set_decl: RuleSetDecl
+  rule_sets: Spanned<Vec<RuleSetRef>>,
+  rule_set_ref: RuleSetRef,
+  rule_set_decl: RuleSetDecl,
+  guard: Guard,
+  cost_item: CostItem,
+  cost_param: CostParam,
+  cost_ty: CostTy,
+  expr: Expr,
+  call_arg: CallArg,
+  binder: Binder
 }
 
 pub fn visit_file<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a File) {
@@ -130,6 +138,11 @@ pub fn visit_item_kind<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a ItemKind) {
         ItemKind::RuleSets(rs) => {
             for r in rs {
                 v.visit_rule_set_decl(r);
+            }
+        }
+        ItemKind::Costs(items) => {
+            for c in items {
+                v.visit_cost_item(c);
             }
         }
     }
@@ -322,14 +335,118 @@ pub fn visit_goal_spec<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a GoalSpec) {
     }
 }
 
-pub fn visit_rule_sets<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Spanned<Vec<(NodeId, Path)>>) {
-    for (id, rs) in &x.node {
-        v.visit_id(id);
-        v.visit_path(rs);
+pub fn visit_rule_sets<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Spanned<Vec<RuleSetRef>>) {
+    for r in &x.node {
+        v.visit_rule_set_ref(r);
+    }
+}
+
+pub fn visit_rule_set_ref<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a RuleSetRef) {
+    v.visit_id(&x.id);
+    v.visit_path(&x.path);
+    for a in &x.args {
+        v.visit_expr(a);
     }
 }
 
 pub fn visit_rule_set_decl<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a RuleSetDecl) {
     v.visit_id(&x.id);
     v.visit_ident(&x.name);
+    for p in &x.params {
+        v.visit_cost_param(p);
+    }
+    if let Some(s) = &x.stage {
+        v.visit_ident(s);
+    }
+    for g in &x.guards {
+        v.visit_guard(g);
+    }
+    v.visit_expr(&x.body);
+}
+
+pub fn visit_guard<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Guard) {
+    v.visit_id(&x.id);
+    v.visit_path(&x.path);
+}
+
+pub fn visit_cost_item<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a CostItem) {
+    v.visit_id(&x.id);
+    match &x.kind {
+        CostItemKind::Const { name, ty, value } => {
+            v.visit_ident(name);
+            v.visit_cost_ty(ty);
+            v.visit_expr(value);
+        }
+        CostItemKind::Fn {
+            name,
+            params,
+            ret,
+            body,
+        } => {
+            v.visit_ident(name);
+            for p in params {
+                v.visit_cost_param(p);
+            }
+            v.visit_cost_ty(ret);
+            v.visit_expr(body);
+        }
+    }
+}
+
+pub fn visit_cost_param<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a CostParam) {
+    v.visit_id(&x.id);
+    v.visit_ident(&x.name);
+    v.visit_cost_ty(&x.ty);
+}
+
+pub fn visit_cost_ty<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a CostTy) {
+    v.visit_id(&x.id);
+    v.visit_ident(&x.name);
+    if let Some(arg) = &x.arg {
+        v.visit_sort(arg);
+    }
+}
+
+pub fn visit_expr<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Expr) {
+    v.visit_id(&x.id);
+    match &x.kind {
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Top => {}
+        ExprKind::Path(p) => v.visit_path(p),
+        ExprKind::Call(p, args) => {
+            v.visit_path(p);
+            for a in args {
+                v.visit_call_arg(a);
+            }
+        }
+        ExprKind::Unary(_, e) => v.visit_expr(e),
+        ExprKind::Binary(_, a, b) => {
+            v.visit_expr(a);
+            v.visit_expr(b);
+        }
+        ExprKind::If(c, a, b) => {
+            v.visit_expr(c);
+            v.visit_expr(a);
+            v.visit_expr(b);
+        }
+        ExprKind::Let(id, name, value, body) => {
+            v.visit_id(id);
+            v.visit_ident(name);
+            v.visit_expr(value);
+            v.visit_expr(body);
+        }
+    }
+}
+
+pub fn visit_call_arg<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a CallArg) {
+    match x {
+        CallArg::Expr(e) => v.visit_expr(e),
+        CallArg::Binder(b) => v.visit_binder(b),
+    }
+}
+
+pub fn visit_binder<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Binder) {
+    v.visit_id(&x.id);
+    v.visit_ident(&x.var);
+    v.visit_expr(&x.generator);
+    v.visit_expr(&x.body);
 }

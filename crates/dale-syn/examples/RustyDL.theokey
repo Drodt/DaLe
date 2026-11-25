@@ -14,43 +14,49 @@
     \rigid equiv(Formula, Formula) -> Formula;
   }
 
-  \rulesets {
-    closure {
-      -15000
-    }
-    replace_known_left {
+  \costs {
+    // Cost of the `replace_known_*` rules; the same as `Cost::NORMALIZE`.
+    const REPLACE: Cost = -5000;
+
+    // Shared by `replace_known_left` and `replace_known_right`: only applicable if the
+    // `\assumes` formula was matched and neither rewrites the formula to itself. Deeper
+    // alternatives (in the beta-path sense) are preferred less (`scale(...)`).
+    fn known_base(extra: Cost) -> Cost {
       if matched_assumes && different_assumes_and_find && different_replacewith_and_find {
-        -5000 + scale(count_max_d_path, 10.0)
+        REPLACE + scale(count_max_d_path, 10.0) + extra
       } else {
         top
       }
     }
+  }
+
+  \rulesets {
+    // Closes a goal.
+    closure { Cost::CLOSE }
+
+    replace_known_left { known_base(0) }
+
+    // Slightly less preferred below the antecedent side of an implication / equivalence.
     replace_known_right {
-      if matched_assumes && different_assumes_and_find && different_replacewith_and_find {
-        -5000 + scale(count_max_d_path, 10.0) + if directly_below_op_at_idx(imp, 1) || directly_below_op_at_idx(equiv, -1) {
+      known_base(
+        if directly_below_op_at_idx(imp, 1) || directly_below_op_at_idx(equiv, -1) {
           100
         } else {
           0
         }
-      } else {
-        top
-      }
+      )
     }
-    concrete {
-      -11000
-    }
-    alpha {
-      -7000
-    }
-    beta {
-      top
-    }
-    cut {
-      top
-    }
-    cut_direct {
-      top
-    }
+
+    // Simplification of constant subformulas.
+    concrete { Cost::REWRITE }
+
+    // Non-branching rules.
+    alpha { Cost::DECOMPOSE }
+
+    // Branching rules, cuts: not applied automatically (infinite cost).
+    beta { top }
+    cut { top }
+    cut_direct { top }
   }
 
   \rules {
