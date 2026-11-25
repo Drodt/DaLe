@@ -94,6 +94,26 @@ impl Stage {
     }
 }
 
+impl std::fmt::Display for Stage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut parts: Vec<&str> = Vec::new();
+        if self.level != Level::Taclet || (!self.sequent && !self.history) {
+            parts.push(match self.level {
+                Level::Taclet => "taclet",
+                Level::App => "app",
+                Level::Formula => "formula",
+            });
+        }
+        if self.sequent {
+            parts.push("sequent");
+        }
+        if self.history {
+            parts.push("history");
+        }
+        f.write_str(&parts.join("+"))
+    }
+}
+
 /// Types of the cost language.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Ty {

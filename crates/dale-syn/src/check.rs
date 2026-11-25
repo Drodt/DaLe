@@ -1,14 +1,22 @@
 use std::{collections::HashMap, iter};
 
-use dale_util::arena::DroplessArena;
+use dale_util::{
+    arena::DroplessArena,
+    symbol::{Interner, Symbol},
+};
 
-use crate::ir::{
-    self, Def, DefId, DefKind, FunctionDecl, GenericArg, GenericParam, GenericParamKind, IrId, Map,
-    OperatorDecl, PredicateDecl, Res, SchemaVarDecl, SortDecl, SortModifiers, SortRef, Term,
-    TermKind,
-    visit::{
-        Visit, visit_function_decl, visit_operator_decl, visit_predicate_decl, visit_sort_decl,
-        visit_term,
+mod costs;
+
+use crate::{
+    cost::{Stage, Ty},
+    ir::{
+        self, CostItem, Def, DefId, DefKind, FunctionDecl, GenericArg, GenericParam,
+        GenericParamKind, IrId, ItemKind, Map, OperatorDecl, PredicateDecl, Res, RuleSetDecl,
+        RuleSetRef, SchemaVarDecl, SortDecl, SortModifiers, SortRef, Term, TermKind,
+        visit::{
+            Visit, visit_function_decl, visit_operator_decl, visit_predicate_decl, visit_sort_decl,
+            visit_term,
+        },
     },
 };
 
@@ -54,8 +62,14 @@ pub enum GenArg<'ir> {
     Term(Term<'ir>),
 }
 
-pub fn check_ir<'ir>(map: &'ir mut Map<'ir>, arena: &'ir DroplessArena) -> Vec<CheckErr> {
-    let mut checker = Checker::new(map, arena);
+/// Checks the sorts of all terms and the types and stages of all cost expressions. The result
+/// contains warnings as well; see [`CheckErr::is_warning`].
+pub fn check_ir<'ir>(
+    map: &'ir mut Map<'ir>,
+    arena: &'ir DroplessArena,
+    interner: &'ir Interner<Symbol>,
+) -> Vec<CheckErr> {
+    let mut checker = Checker::new(map, arena, interner);
     checker.visit_file(&map.file);
     checker.errors
 }
@@ -71,6 +85,35 @@ pub enum CheckErr {
     MissingFormulaSort(DefId),
     OperatorDoesNotUseFormula(DefId),
     FormulaUsedOutsideOperator(DefId, IrId),
+    // --- cost language ---
+    /// A type name that is not `Cost`, `Int`, `Float`, `Bool`, `Op`, `Sort` or `Term`.
+    UnknownCostType(IrId),
+    /// `Int<S>`: only `Term` takes a sort argument.
+    CostTypeArgNotAllowed(IrId),
+    /// (expression, expected, found)
+    CostTypeMismatch(IrId, Ty, Ty),
+    /// A term whose sort is not a subsort of the expected one.
+    CostTermSortMismatch(IrId),
+    /// (call, expected, found)
+    CostArity(IrId, usize, usize),
+    CostNotCallable(IrId),
+    /// A cost function used without a call.
+    CostNotAValue(IrId),
+    CostBinderMisuse(IrId),
+    CostGeneratorMisuse(IrId),
+    CostRecursion(IrId),
+    /// A `const` that needs more than the taclet.
+    CostConstNotConstant(IrId, Stage),
+    /// (ruleset, asserted, inferred): the body needs more than `\stage(...)` asserts. An error.
+    StageExceedsAssertion(DefId, Stage, Stage),
+    /// (ruleset, asserted, inferred): the body needs less than asserted. A warning.
+    StageAssertionStronger(DefId, Stage, Stage),
+    /// (reference, ruleset, expected, found)
+    RuleSetArity(IrId, DefId, usize, usize),
+    /// (reference, ruleset, argument index)
+    RuleSetArgMismatch(IrId, DefId, usize),
+    /// (extension, base): `extend` / `override` with a different parameter list.
+    ExtendParamMismatch(DefId, DefId),
 }
 
 impl CheckErr {
@@ -91,7 +134,51 @@ impl CheckErr {
             CheckErr::FormulaUsedOutsideOperator(..) => {
                 "Formula used for predicate or function declaration".to_string()
             }
+            CheckErr::UnknownCostType(..) => "Unknown type in the cost language".to_string(),
+            CheckErr::CostTypeArgNotAllowed(..) => "Only `Term` takes a sort argument".to_string(),
+            CheckErr::CostTypeMismatch(_, expected, found) => {
+                format!("Type mismatch: expected {expected:?}, found {found:?}")
+            }
+            CheckErr::CostTermSortMismatch(..) => {
+                "Term sort is not a subsort of the expected sort".to_string()
+            }
+            CheckErr::CostArity(_, expected, found) => {
+                format!("Expected {expected} arguments, found {found}")
+            }
+            CheckErr::CostNotCallable(..) => "Not a function".to_string(),
+            CheckErr::CostNotAValue(..) => "Cost function used without a call".to_string(),
+            CheckErr::CostBinderMisuse(..) => {
+                "Only `sum`, `any` and `all` take a binder `x in generator: body`, exactly one"
+                    .to_string()
+            }
+            CheckErr::CostGeneratorMisuse(..) => {
+                "A generator can only be used as `x in generator: ...`".to_string()
+            }
+            CheckErr::CostRecursion(..) => "Recursive cost function".to_string(),
+            CheckErr::CostConstNotConstant(_, stage) => {
+                format!("A `const` may only depend on constants, but this needs stage `{stage}`")
+            }
+            CheckErr::StageExceedsAssertion(_, asserted, found) => {
+                format!("Body needs stage `{found}`, which exceeds the asserted stage `{asserted}`")
+            }
+            CheckErr::StageAssertionStronger(_, asserted, found) => format!(
+                "Stage assertion `{asserted}` is stronger than needed; the body only needs `{found}`"
+            ),
+            CheckErr::RuleSetArity(_, _, expected, found) => {
+                format!("Ruleset takes {expected} arguments, found {found}")
+            }
+            CheckErr::RuleSetArgMismatch(_, _, idx) => {
+                format!("Argument {} does not match the ruleset parameter", idx + 1)
+            }
+            CheckErr::ExtendParamMismatch(..) => {
+                "Parameter list differs from the extended ruleset".to_string()
+            }
         }
+    }
+
+    /// Warnings do not make a theory invalid.
+    pub fn is_warning(&self) -> bool {
+        matches!(self, CheckErr::StageAssertionStronger(..))
     }
 
     pub fn id(&self) -> Option<IrId> {
@@ -101,6 +188,19 @@ impl CheckErr {
             CheckErr::ArgKindMismatch(ir_id, ..) => Some(*ir_id),
             CheckErr::ConstArgNotSubsort(ir_id, ..) => Some(*ir_id),
             CheckErr::CallArgNotSubsort(ir_id, ..) => Some(*ir_id),
+            CheckErr::UnknownCostType(i)
+            | CheckErr::CostTypeArgNotAllowed(i)
+            | CheckErr::CostTypeMismatch(i, ..)
+            | CheckErr::CostTermSortMismatch(i)
+            | CheckErr::CostArity(i, ..)
+            | CheckErr::CostNotCallable(i)
+            | CheckErr::CostNotAValue(i)
+            | CheckErr::CostBinderMisuse(i)
+            | CheckErr::CostGeneratorMisuse(i)
+            | CheckErr::CostRecursion(i)
+            | CheckErr::CostConstNotConstant(i, ..)
+            | CheckErr::RuleSetArity(i, ..)
+            | CheckErr::RuleSetArgMismatch(i, ..) => Some(*i),
             _ => None,
         }
     }
@@ -113,11 +213,26 @@ struct Checker<'ir> {
     def_id_args_to_sort: HashMap<(DefId, &'ir [GenArg<'ir>]), Sort<'ir>>,
     formula_sort: Option<SortDecl<'ir>>,
     errors: Vec<CheckErr>,
+    interner: &'ir Interner<Symbol>,
+    /// All ruleset declarations, to check the arguments of `\rulesets(...)` references.
+    rule_sets: HashMap<DefId, RuleSetDecl<'ir>>,
+    cost: costs::CostState<'ir>,
 }
 
 impl<'ir> Checker<'ir> {
-    fn new(map: &'ir Map<'ir>, arena: &'ir DroplessArena) -> Self {
+    fn new(map: &'ir Map<'ir>, arena: &'ir DroplessArena, interner: &'ir Interner<Symbol>) -> Self {
+        let mut rule_sets = HashMap::new();
+        for item in map.items.values() {
+            if let ItemKind::RuleSets(decls) = item.kind {
+                for d in decls {
+                    rule_sets.insert(d.id, *d);
+                }
+            }
+        }
         Self {
+            interner,
+            rule_sets,
+            cost: Default::default(),
             map,
             arena,
             ir_id_to_sort: Default::default(),
@@ -351,6 +466,18 @@ impl<'ir> Visit<'ir> for Checker<'ir> {
     fn visit_term(&mut self, x: &'ir Term<'ir>) {
         visit_term(self, x);
         self.term_sort(x);
+    }
+
+    fn visit_cost_item(&mut self, x: &'ir CostItem<'ir>) {
+        self.check_cost_item(x);
+    }
+
+    fn visit_rule_set_decl(&mut self, x: &'ir RuleSetDecl<'ir>) {
+        self.check_rule_set_decl(x);
+    }
+
+    fn visit_rule_set_ref(&mut self, x: &'ir RuleSetRef<'ir>) {
+        self.check_rule_set_ref(x);
     }
 
     fn visit_item_id(&mut self, x: &'ir ir::ItemId) {
