@@ -608,9 +608,7 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
                     // We ignore important items
                     continue;
                 }
-                theory.scopes[ns]
-                    .bindings
-                    .extend(scope.bindings.into_iter());
+                theory.scopes[ns].bindings.extend(scope.bindings);
             }
         }
         let def_id = self.resolver.node_id_to_def_id[&x.id].to_def_id();
@@ -705,12 +703,12 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
     }
 
     fn visit_rule_set_decl(&mut self, x: &'ast raw::RuleSetDecl) {
-        if let Some(st) = &x.stage {
-            if Stage::parse(self.cx.interner.get(st.node)).is_none() {
-                self.resolver
-                    .errors
-                    .push(ResolveErr::InvalidStage(st.node, st.span));
-            }
+        if let Some(st) = &x.stage
+            && Stage::parse(self.cx.interner.get(st.node)).is_none()
+        {
+            self.resolver
+                .errors
+                .push(ResolveErr::InvalidStage(st.node, st.span));
         }
 
         // Parameters, guards and body live in their own scope.

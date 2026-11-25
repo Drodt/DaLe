@@ -233,14 +233,13 @@ impl<'ir> Checker<'ir> {
         }
 
         // `extend` / `override` must keep the parameter list of the ruleset they change.
-        if let Some(Res::Def(DefKind::RuleSet, base_id)) = x.base {
-            if let Some(base) = self.rule_sets.get(&base_id).copied() {
-                let base_tys: Vec<CTy<'ir>> =
-                    base.params.iter().map(|p| self.cost_ty(&p.ty)).collect();
-                if base_tys != param_tys {
-                    self.errors
-                        .push(CheckErr::ExtendParamMismatch(x.id, base_id));
-                }
+        if let Some(Res::Def(DefKind::RuleSet, base_id)) = x.base
+            && let Some(base) = self.rule_sets.get(&base_id).copied()
+        {
+            let base_tys: Vec<CTy<'ir>> = base.params.iter().map(|p| self.cost_ty(&p.ty)).collect();
+            if base_tys != param_tys {
+                self.errors
+                    .push(CheckErr::ExtendParamMismatch(x.id, base_id));
             }
         }
     }
