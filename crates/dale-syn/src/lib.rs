@@ -8,9 +8,15 @@ use crate::{dl_theory::Token, raw_theory::NodeId};
 pub mod check;
 pub mod cost;
 mod ctx;
+pub mod frontend;
 pub mod ir;
 pub mod raw_theory;
 mod resolve;
+
+pub use frontend::{
+    Diagnostic, Error, Failure, LineCol, Parsed, Phase, Severity, SourceFile, SourceMap, SpanIndex,
+    parse, parse_text,
+};
 
 pub struct ParserCtx {
     next_id: NodeId,
@@ -260,7 +266,7 @@ mod tests {
         );
         let (ir, errors) = ir::lower::lower(file, cx, resolver);
         assert!(errors.is_empty(), "unresolved names");
-        check::check_ir(&mut ir.clone(), cx.ir_arena, cx.interner)
+        check::check_ir(&ir, cx.ir_arena, cx.interner)
     }
 
     /// A theory with a formula sort, the given cost items / rulesets, and a rule `r` that has a
@@ -552,7 +558,7 @@ mod tests {
                 "No resolution"
             )
         }
-        let all = check::check_ir(&mut ir.clone(), cx.ir_arena, cx.interner);
+        let all = check::check_ir(&ir, cx.ir_arena, cx.interner);
         for w in all.iter().filter(|e| e.is_warning()) {
             println!("warning: {}", w.format());
         }

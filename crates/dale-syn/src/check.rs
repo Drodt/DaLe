@@ -65,7 +65,7 @@ pub enum GenArg<'ir> {
 /// Checks the sorts of all terms and the types and stages of all cost expressions. The result
 /// contains warnings as well; see [`CheckErr::is_warning`].
 pub fn check_ir<'ir>(
-    map: &'ir mut Map<'ir>,
+    map: &'ir Map<'ir>,
     arena: &'ir DroplessArena,
     interner: &'ir Interner<Symbol>,
 ) -> Vec<CheckErr> {
@@ -200,7 +200,21 @@ impl CheckErr {
             | CheckErr::CostRecursion(i)
             | CheckErr::CostConstNotConstant(i, ..)
             | CheckErr::RuleSetArity(i, ..)
-            | CheckErr::RuleSetArgMismatch(i, ..) => Some(*i),
+            | CheckErr::RuleSetArgMismatch(i, ..)
+            | CheckErr::FormulaUsedOutsideOperator(_, i) => Some(*i),
+            _ => None,
+        }
+    }
+
+    /// The declaration this result is about, for results without a node id.
+    pub fn def_id(&self) -> Option<DefId> {
+        match self {
+            CheckErr::MultipleFormulaSorts(d, _)
+            | CheckErr::MissingFormulaSort(d)
+            | CheckErr::OperatorDoesNotUseFormula(d)
+            | CheckErr::StageExceedsAssertion(d, ..)
+            | CheckErr::StageAssertionStronger(d, ..)
+            | CheckErr::ExtendParamMismatch(d, _) => Some(*d),
             _ => None,
         }
     }
