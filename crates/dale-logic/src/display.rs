@@ -103,3 +103,34 @@ impl Display for Show<'_, TermIdx> {
         Ok(())
     }
 }
+
+impl TermPool {
+    pub fn show_sequent<'a>(
+        &'a self,
+        names: &'a Interner<Symbol>,
+        s: &'a crate::Sequent,
+    ) -> Show<'a, &'a crate::Sequent> {
+        Show {
+            pool: self,
+            names,
+            what: s,
+        }
+    }
+}
+
+impl Display for Show<'_, &crate::Sequent> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let side = |f: &mut Formatter<'_>, s: &crate::Semisequent| -> fmt::Result {
+            for (i, t) in s.iter().enumerate() {
+                if i > 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{}", self.pool.show_term(self.names, *t))?;
+            }
+            Ok(())
+        };
+        side(f, self.what.antecedent())?;
+        f.write_str(" ==> ")?;
+        side(f, self.what.succedent())
+    }
+}

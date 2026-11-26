@@ -475,3 +475,177 @@ fn signature_errors() {
     assert!(matches!(b.add_op(d), Err(SigError::BindingOutOfRange(_))));
     assert_eq!(b.finish().unwrap_err(), SigError::MissingFormula);
 }
+
+// ------------------------------------------------------------------ sequents
+
+mod sequents {
+    use super::*;
+
+    fn atoms(f: &mut Fx) -> (TermIdx, TermIdx, TermIdx) {
+        let p = f.c(f.p);
+        let pp = f.and(p, p);
+        let ppp = f.and(pp, p);
+        (p, pp, ppp)
+    }
+
+    #[test]
+    fn add_remove_and_sharing() {
+        let mut f = fx();
+        let (p, pp, ppp) = atoms(&mut f);
+        let s0 = Sequent::new();
+        let c1 = s0.add(&f.pool, Side::Antecedent, p).unwrap();
+        assert_eq!(c1.antecedent.added, [p]);
+        let s1 = c1.sequent;
+        // adding again is rejected and returns an equal sequent
+        let c2 = s1.add(&f.pool, Side::Antecedent, p).unwrap();
+        assert!(!c2.has_changed());
+        assert_eq!(c2.antecedent.rejected, [p]);
+        // the same formula on the other side is fine
+        let s2 = s1
+            .add_all(&f.pool, Side::Succedent, &[pp, ppp, pp])
+            .unwrap();
+        assert_eq!(s2.succedent.added, [pp, ppp]);
+        assert_eq!(s2.succedent.rejected, [pp]);
+        let s2 = s2.sequent;
+        assert_eq!(s2.succedent().as_slice(), &[pp, ppp]);
+        // the untouched side is shared, the old sequent is unchanged
+        assert!(std::ptr::eq(
+            s1.antecedent().as_slice(),
+            s2.antecedent().as_slice()
+        ));
+        assert!(s1.succedent().is_empty());
+        let r = s2.remove(Side::Succedent, 0).unwrap();
+        assert_eq!(r.succedent.removed, [pp]);
+        assert_eq!(r.sequent.succedent().as_slice(), &[ppp]);
+        assert_eq!(s2.len(), 3);
+        assert!(matches!(
+            s2.remove(Side::Antecedent, 5),
+            Err(SequentError::IndexOutOfRange { index: 5, .. })
+        ));
+        assert_eq!(
+            f.pool.show_sequent(&f.names, &s2).to_string(),
+            "p ==> and(p, p), and(and(p, p), p)"
+        );
+    }
+
+    #[test]
+    fn only_closed_formulas() {
+        let mut f = fx();
+        let int = f.sort(f.int);
+        let z = f.c(f.zero);
+        let v0 = f.var(int, 0);
+        let open = f.pool.mk_inferred(f.le, &[], &[v0, z]).unwrap();
+        let s = Sequent::new();
+        assert_eq!(
+            s.add(&f.pool, Side::Antecedent, open).unwrap_err(),
+            SequentError::NotClosed(open)
+        );
+        assert_eq!(
+            s.add(&f.pool, Side::Antecedent, z).unwrap_err(),
+            SequentError::NotAFormula(z)
+        );
+        let q = f.all(int, open).unwrap();
+        assert!(s.add(&f.pool, Side::Succedent, q).is_ok());
+        assert!(
+            Sequent::from_formulas(&f.pool, &[q, q], &[])
+                .unwrap()
+                .antecedent()
+                .len()
+                == 1
+        );
+    }
+
+    #[test]
+    fn replace_formula_cases() {
+        let mut f = fx();
+        let (p, pp, ppp) = atoms(&mut f);
+        let s = Sequent::from_formulas(&f.pool, &[p, pp, ppp], &[]).unwrap();
+        // one-to-one
+        let c = s
+            .replace_formula(&f.pool, Side::Antecedent, 1, &[ppp])
+            .unwrap();
+        // ppp is already present: the replaced formula is just removed
+        assert_eq!(c.antecedent.rejected, [ppp]);
+        assert_eq!(c.antecedent.removed, [pp]);
+        assert_eq!(c.sequent.antecedent().as_slice(), &[p, ppp]);
+        // one-to-many keeps the place
+        let q = f.and(p, ppp);
+        let c = s
+            .replace_formula(&f.pool, Side::Antecedent, 0, &[q, pp])
+            .unwrap();
+        assert_eq!(c.antecedent.modified, [(p, q)]);
+        assert_eq!(c.antecedent.rejected, [pp]);
+        assert_eq!(c.sequent.antecedent().as_slice(), &[q, pp, ppp]);
+        // replacing with itself changes nothing
+        assert!(
+            !s.replace_formula(&f.pool, Side::Antecedent, 2, &[ppp])
+                .unwrap()
+                .has_changed()
+        );
+        // to nothing
+        let c = s
+            .replace_formula(&f.pool, Side::Antecedent, 2, &[])
+            .unwrap();
+        assert_eq!(c.antecedent.removed, [ppp]);
+    }
+
+    #[test]
+    fn replace_subterm_and_checks() {
+        let mut f = fx();
+        let (p, pp, _) = atoms(&mut f);
+        let s = Sequent::from_formulas(&f.pool, &[], &[pp]).unwrap();
+        // pp = and(p, p): replace the second argument by and(p, p)
+        let pos = PosInOccurrence::new(Side::Succedent, 0, PosInTerm::top().down(1));
+        assert_eq!(pos.sub_term(&f.pool, &s), Some(p));
+        let c = s
+            .replace_subterm(&mut f.pool, &pos, pp, SortCheck::Enforce)
+            .unwrap();
+        let want = f.and(p, pp);
+        assert_eq!(c.sequent.succedent().as_slice(), &[want]);
+        assert_eq!(c.succedent.modified, [(pp, want)]);
+        // ill-sorted replacement: a nat constant where a formula is needed
+        let z = f.c(f.zero);
+        let bad = s.replace_subterm(&mut f.pool, &pos, z, SortCheck::Enforce);
+        assert!(matches!(
+            bad,
+            Err(SequentError::Term(LogicError::ArgSort { index: 1, .. }))
+        ));
+        // without sort checks it is the caller's problem; the formula is still a closed formula
+        assert!(
+            s.replace_subterm(&mut f.pool, &pos, z, SortCheck::Skip)
+                .is_ok()
+        );
+        // nonexistent position
+        let nope = PosInOccurrence::new(Side::Succedent, 0, PosInTerm::top().down(7));
+        assert_eq!(
+            s.replace_subterm(&mut f.pool, &nope, p, SortCheck::Skip)
+                .unwrap_err(),
+            SequentError::BadPosition
+        );
+        // replacing the root by a non-formula is caught even without sort checks
+        let root = PosInOccurrence::top_level(Side::Succedent, 0);
+        assert!(matches!(
+            s.replace_subterm(&mut f.pool, &root, z, SortCheck::Skip),
+            Err(SequentError::NotAFormula(_))
+        ));
+        assert_eq!(PosInTerm::top().down(2).up(), Some(PosInTerm::top()));
+        assert_eq!(PosInTerm::top().up(), None);
+    }
+
+    #[test]
+    fn move_between_sides() {
+        let mut f = fx();
+        let (p, pp, _) = atoms(&mut f);
+        let s = Sequent::from_formulas(&f.pool, &[p, pp], &[p]).unwrap();
+        let c = s.move_to_other_side(Side::Antecedent, 1).unwrap();
+        assert_eq!(c.antecedent.removed, [pp]);
+        assert_eq!(c.succedent.added, [pp]);
+        assert_eq!(c.sequent.antecedent().as_slice(), &[p]);
+        assert_eq!(c.sequent.succedent().as_slice(), &[p, pp]);
+        // already on the other side: only removed
+        let c = s.move_to_other_side(Side::Antecedent, 0).unwrap();
+        assert_eq!(c.succedent.rejected, [p]);
+        assert_eq!(c.sequent.succedent().as_slice(), &[p]);
+        assert_eq!(c.sequent.antecedent().as_slice(), &[pp]);
+    }
+}

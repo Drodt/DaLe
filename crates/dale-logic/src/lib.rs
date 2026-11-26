@@ -17,13 +17,13 @@
 //! TODO: the dale-syn side still has to report the sort of the variable an operator binds, mark
 //! the bound variable operator, and reject duplicate numbers in `{..}` (at most one variable).
 //!
-//! TODO: sequents will only contain closed formulas (`Term::is_closed`); enforce that where
-//! sequents are defined.
 
 mod display;
 mod error;
 mod ids;
 mod pool;
+mod pos;
+mod sequent;
 mod sig;
 mod subst;
 mod table;
@@ -35,6 +35,8 @@ pub use display::Show;
 pub use error::LogicError;
 pub use ids::{OpDeclId, OpIdx, SortDeclId, SortIdx, TermIdx};
 pub use pool::{Checkpoint, GenArg, OpData, SortData, Term, TermPool};
+pub use pos::{PosInOccurrence, PosInTerm, SortCheck};
+pub use sequent::{SemiChange, Semisequent, Sequent, SequentChange, SequentError, Side};
 pub use sig::{
     Binding, GenArgPat, GenKind, GenParam, MetaKind, MetaValue, OpDecl, OpFlags, OpKind, SigError,
     Signature, SignatureBuilder, SortDecl, SortKind, SortPat,

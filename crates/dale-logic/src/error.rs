@@ -45,6 +45,8 @@ pub enum LogicError {
     InferMismatch(usize),
     /// The signature declares no bound variable operator.
     NoBoundVarOp,
+    /// A position that does not exist in the term.
+    BadPosition,
     /// `instantiate` was called on a term whose operator binds no variable.
     NotABinder,
 }
