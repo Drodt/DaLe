@@ -3,7 +3,10 @@ use crate::ids::SortIdx;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LogicError {
     /// Wrong number of generic arguments.
-    GenericArity { expected: usize, found: usize },
+    GenericArity {
+        expected: usize,
+        found: usize,
+    },
     /// The i-th generic argument is a sort where a constant is required, or vice versa.
     GenericKind(usize),
     /// The i-th generic argument is a constant term with free bound variables.
@@ -14,9 +17,15 @@ pub enum LogicError {
         expected: SortIdx,
         found: SortIdx,
     },
-    MetaArity { expected: usize, found: usize },
+    MetaArity {
+        expected: usize,
+        found: usize,
+    },
     MetaKind(usize),
-    ArgCount { expected: usize, found: usize },
+    ArgCount {
+        expected: usize,
+        found: usize,
+    },
     /// The sort of the argument is not a subsort of the expected sort.
     ArgSort {
         index: usize,
@@ -24,7 +33,10 @@ pub enum LogicError {
         found: SortIdx,
     },
     /// A variable bound by a binder has a different sort than the binder declares.
-    BindSort { expected: SortIdx, found: SortIdx },
+    BindSort {
+        expected: SortIdx,
+        found: SortIdx,
+    },
     /// The de Bruijn index does not fit into 32 bits.
     VarIndexTooLarge,
     /// The i-th generic parameter does not occur in the arguments' sorts.

@@ -349,7 +349,9 @@ impl SignatureBuilder {
                             self.check_pat(name, s, params, visible)?
                         }
                         (GenKind::Const(_), GenArgPat::Const(i)) => match params.get(*i as usize) {
-                            Some(q) if (*i as usize) < visible && matches!(q.kind, GenKind::Const(_)) => {}
+                            Some(q)
+                                if (*i as usize) < visible
+                                    && matches!(q.kind, GenKind::Const(_)) => {}
                             _ => return Err(bad()),
                         },
                         _ => return Err(bad()),
