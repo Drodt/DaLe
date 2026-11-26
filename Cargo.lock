@@ -80,6 +80,14 @@ name = "dale-index"
 version = "0.1.0"
 
 [[package]]
+name = "dale-logic"
+version = "0.1.0"
+dependencies = [
+ "dale-index",
+ "dale-util",
+]
+
+[[package]]
 name = "dale-macros"
 version = "0.1.0"
 dependencies = [

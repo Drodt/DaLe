@@ -35,8 +35,8 @@ use crate::{
     ctx::{Ctx, FileTable},
     dl_theory,
     ir::{
-        self, CostItem, CostParam, CostTy, DefId, Expr, FileId, IrId, ItemId, LOCAL_FILE, Map,
-        Module, Rule, RuleSetDecl, RuleSetRef, SchemaVarDecl, SortDecl, SortRef, Span, Term,
+        self, CostItem, CostParam, CostTy, DefId, Expr, FileId, IrId, ItemId, Map, Module, Rule,
+        RuleSetDecl, RuleSetRef, SchemaVarDecl, SortDecl, SortRef, Span, Term,
         visit::{self, Visit},
     },
     raw_theory::{self, ModuleItem},
@@ -659,6 +659,8 @@ fn parse_error(file: FileId, e: ParseError<usize, dl_theory::Token<'_>, &str>) -
 
 #[cfg(test)]
 mod tests {
+    use crate::ir::LOCAL_FILE;
+
     use super::*;
 
     fn text(src: &str) -> Result<Parsed, Error> {

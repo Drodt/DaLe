@@ -1,0 +1,11 @@
+[package]
+name = "dale-logic"
+description = "Hash-consed logical terms, sorts and operators for DaLe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dale-index = { path = "../dale-index" }
+dale-util = { path = "../dale-util" }
