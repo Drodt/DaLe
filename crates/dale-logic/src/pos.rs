@@ -1,5 +1,7 @@
 //! Positions inside terms and sequents, and replacing the subterm at a position.
 
+use smallvec::SmallVec;
+
 use crate::error::LogicError;
 use crate::ids::TermIdx;
 use crate::pool::TermPool;
@@ -15,18 +17,19 @@ pub enum SortCheck {
 }
 
 /// A position in a term: the child numbers on the path from the root. The empty path is the root.
-// TODO: the path is a heap allocated vector; if positions turn out to be created in hot loops,
-// use an inline small vector.
+///
+/// Paths of up to 8 steps are stored inline; deeper ones spill to the heap.
+// TODO: tune the inline capacity once typical formula depths are known.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct PosInTerm(Vec<u16>);
+pub struct PosInTerm(SmallVec<[u16; 8]>);
 
 impl PosInTerm {
     pub fn top() -> Self {
-        Self(Vec::new())
+        Self(SmallVec::new())
     }
 
     pub fn from_path(path: &[u16]) -> Self {
-        Self(path.to_vec())
+        Self(SmallVec::from_slice(path))
     }
 
     pub fn is_top(&self) -> bool {
@@ -44,8 +47,7 @@ impl PosInTerm {
     /// The position of the `i`-th child.
     #[must_use]
     pub fn down(&self, i: u16) -> Self {
-        let mut v = Vec::with_capacity(self.0.len() + 1);
-        v.extend_from_slice(&self.0);
+        let mut v = self.0.clone();
         v.push(i);
         Self(v)
     }
@@ -54,7 +56,7 @@ impl PosInTerm {
     #[must_use]
     pub fn up(&self) -> Option<Self> {
         let (_, rest) = self.0.split_last()?;
-        Some(Self(rest.to_vec()))
+        Some(Self(SmallVec::from_slice(rest)))
     }
 
     /// The subterm of `root` at this position, `None` if the position does not exist.

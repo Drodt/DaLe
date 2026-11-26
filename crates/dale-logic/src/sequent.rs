@@ -30,7 +30,10 @@ pub enum SequentError {
     NotAFormula(TermIdx),
     /// The formula has a bound variable that no binder in it binds.
     NotClosed(TermIdx),
-    IndexOutOfRange { side: Side, index: usize },
+    IndexOutOfRange {
+        side: Side,
+        index: usize,
+    },
     /// A position that does not exist in the formula.
     BadPosition,
     /// Rebuilding a term failed (only with [`SortCheck::Enforce`]).

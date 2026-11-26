@@ -87,6 +87,7 @@ dependencies = [
  "dale-macros",
  "dale-util",
  "hashbrown 0.15.5",
+ "smallvec",
 ]
 
 [[package]]
