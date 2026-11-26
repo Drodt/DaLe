@@ -349,10 +349,10 @@ impl TermPool {
         }
         let sig = self.sig.clone();
         let d = sig.sort_decl(decl);
-        self.check_generics(&sig, &d.params, args)?;
+        self.check_generics(&d.params, args)?;
         let mut anc = Vec::new();
         for e in &d.extends {
-            let s = self.inst_sort(&sig, e, args)?;
+            let s = self.inst_sort(e, args)?;
             anc.push(s);
             anc.extend_from_slice(&self.sorts[s.index()].ancestors);
         }
@@ -377,7 +377,6 @@ impl TermPool {
     /// Instantiates a pattern of a declaration with the given generic arguments.
     pub(crate) fn inst_sort(
         &mut self,
-        sig: &Signature,
         pat: &SortPat,
         generics: &[GenArg],
     ) -> Result<SortIdx, LogicError> {
@@ -390,7 +389,7 @@ impl TermPool {
                 let mut v = Vec::with_capacity(args.len());
                 for a in args {
                     v.push(match a {
-                        GenArgPat::Sort(p) => GenArg::Sort(self.inst_sort(sig, p, generics)?),
+                        GenArgPat::Sort(p) => GenArg::Sort(self.inst_sort(p, generics)?),
                         GenArgPat::Const(i) => match generics.get(*i as usize) {
                             Some(c @ GenArg::Const(_)) => *c,
                             _ => return Err(LogicError::GenericKind(*i as usize)),
@@ -402,12 +401,7 @@ impl TermPool {
         }
     }
 
-    fn check_generics(
-        &mut self,
-        sig: &Signature,
-        params: &[GenParam],
-        args: &[GenArg],
-    ) -> Result<(), LogicError> {
+    fn check_generics(&mut self, params: &[GenParam], args: &[GenArg]) -> Result<(), LogicError> {
         if params.len() != args.len() {
             return Err(LogicError::GenericArity {
                 expected: params.len(),
@@ -423,7 +417,7 @@ impl TermPool {
                         return Err(LogicError::ConstNotClosed(i));
                     }
                     let found = term.sort;
-                    let expected = self.inst_sort(sig, pat, &args[..i])?;
+                    let expected = self.inst_sort(pat, &args[..i])?;
                     if !self.is_subsort(found, expected) {
                         return Err(LogicError::ConstSort {
                             index: i,
@@ -457,7 +451,7 @@ impl TermPool {
         }
         let sig = self.sig.clone();
         let d = sig.op_decl(decl);
-        self.check_generics(&sig, &d.generics, generics)?;
+        self.check_generics(&d.generics, generics)?;
         if d.meta.len() != meta.len() {
             return Err(LogicError::MetaArity {
                 expected: d.meta.len(),
@@ -471,11 +465,11 @@ impl TermPool {
         }
         let mut arg_sorts = Vec::with_capacity(d.args.len());
         for a in &d.args {
-            arg_sorts.push(self.inst_sort(&sig, a, generics)?);
+            arg_sorts.push(self.inst_sort(a, generics)?);
         }
-        let result = self.inst_sort(&sig, &d.result, generics)?;
+        let result = self.inst_sort(&d.result, generics)?;
         let bind = match &d.bind {
-            Some(b) => Some((b.arg, self.inst_sort(&sig, &b.var_sort, generics)?)),
+            Some(b) => Some((b.arg, self.inst_sort(&b.var_sort, generics)?)),
             None => None,
         };
         let var_index = match (d.kind, meta) {
