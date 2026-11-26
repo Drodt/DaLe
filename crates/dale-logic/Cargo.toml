@@ -8,4 +8,6 @@ repository.workspace = true
 
 [dependencies]
 dale-index = { path = "../dale-index" }
+dale-macros = { path = "../dale-macros" }
 dale-util = { path = "../dale-util" }
+hashbrown = { version = "0.15", default-features = false, features = ["inline-more"] }

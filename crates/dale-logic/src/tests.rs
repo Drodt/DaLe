@@ -452,17 +452,25 @@ fn signature_errors() {
     assert_eq!(b.add_sort(top).unwrap_err(), SigError::TopRedeclared);
     // forward reference
     let mut d = SortDecl::new(n.intern("x"));
-    d.extends = vec![SortPat::simple(SortDeclId(7))];
+    d.extends = vec![SortPat::simple(SortDeclId::from_u32(7))];
     assert!(matches!(b.add_sort(d), Err(SigError::BadSortPattern(_))));
     // malformed bound variable
-    let mut d = OpDecl::new(n.intern("var"), vec![], SortPat::simple(SortDeclId(0)));
+    let mut d = OpDecl::new(
+        n.intern("var"),
+        vec![],
+        SortPat::simple(SortDeclId::from_u32(0)),
+    );
     d.kind = OpKind::BoundVar;
     assert!(matches!(b.add_op(d), Err(SigError::BadBoundVar(_))));
     // binding of a missing argument
-    let mut d = OpDecl::new(n.intern("q"), vec![], SortPat::simple(SortDeclId(0)));
+    let mut d = OpDecl::new(
+        n.intern("q"),
+        vec![],
+        SortPat::simple(SortDeclId::from_u32(0)),
+    );
     d.bind = Some(Binding {
         arg: 0,
-        var_sort: SortPat::simple(SortDeclId(0)),
+        var_sort: SortPat::simple(SortDeclId::from_u32(0)),
     });
     assert!(matches!(b.add_op(d), Err(SigError::BindingOutOfRange(_))));
     assert_eq!(b.finish().unwrap_err(), SigError::MissingFormula);

@@ -64,8 +64,8 @@ fn write_gen_args(
 impl Display for Show<'_, SortIdx> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let d = &self.pool[self.what];
-        f.write_str(name_of(self, self.pool.sig.sort_decl(d.decl).name))?;
-        write_gen_args(self.pool, self.names, &d.args, f)
+        f.write_str(name_of(self, self.pool.sig.sort_decl(d.decl()).name))?;
+        write_gen_args(self.pool, self.names, d.args(), f)
     }
 }
 
@@ -76,9 +76,9 @@ fn name_of<'a, T>(s: &'a Show<'_, T>, sym: Symbol) -> &'a str {
 impl Display for Show<'_, OpIdx> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let d = &self.pool[self.what];
-        f.write_str(name_of(self, self.pool.sig.op_decl(d.decl).name))?;
-        write_gen_args(self.pool, self.names, &d.generics, f)?;
-        for MetaValue::Nat(n) in d.meta.iter() {
+        f.write_str(name_of(self, self.pool.sig.op_decl(d.decl()).name))?;
+        write_gen_args(self.pool, self.names, d.generics(), f)?;
+        for MetaValue::Nat(n) in d.meta().iter() {
             write!(f, "[{n}]")?;
         }
         Ok(())

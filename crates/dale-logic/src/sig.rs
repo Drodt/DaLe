@@ -190,11 +190,11 @@ pub struct Signature {
 
 impl Signature {
     pub fn sort_decl(&self, id: SortDeclId) -> &SortDecl {
-        &self.sorts[id.0 as usize]
+        &self.sorts[id.index()]
     }
 
     pub fn op_decl(&self, id: OpDeclId) -> &OpDecl {
-        &self.ops[id.0 as usize]
+        &self.ops[id.index()]
     }
 
     pub fn top(&self) -> SortDeclId {
@@ -209,14 +209,14 @@ impl Signature {
         self.sorts
             .iter()
             .enumerate()
-            .map(|(i, d)| (SortDeclId(i as u32), d))
+            .map(|(i, d)| (SortDeclId::from_u32(i as u32), d))
     }
 
     pub fn op_decls(&self) -> impl Iterator<Item = (OpDeclId, &OpDecl)> {
         self.ops
             .iter()
             .enumerate()
-            .map(|(i, d)| (OpDeclId(i as u32), d))
+            .map(|(i, d)| (OpDeclId::from_u32(i as u32), d))
     }
 
     /// The first declared bound variable operator, if any.
@@ -243,7 +243,7 @@ impl SignatureBuilder {
     /// Declares a sort. Sorts can only refer to sorts declared before them, which keeps the
     /// hierarchy free of cycles.
     pub fn add_sort(&mut self, decl: SortDecl) -> Result<SortDeclId, SigError> {
-        let id = SortDeclId(self.sorts.len() as u32);
+        let id = SortDeclId::from_u32(self.sorts.len() as u32);
         match decl.kind {
             SortKind::Normal => {}
             SortKind::Top | SortKind::Formula => {
@@ -293,7 +293,7 @@ impl SignatureBuilder {
                 return Err(SigError::BadBoundVar(decl.name));
             }
         }
-        let id = OpDeclId(self.ops.len() as u32);
+        let id = OpDeclId::from_u32(self.ops.len() as u32);
         self.ops.push(decl);
         Ok(id)
     }
@@ -339,7 +339,7 @@ impl SignatureBuilder {
                 _ => Err(bad()),
             },
             SortPat::Inst { decl, args } => {
-                let d = self.sorts.get(decl.0 as usize).ok_or_else(bad)?;
+                let d = self.sorts.get(decl.index()).ok_or_else(bad)?;
                 if d.params.len() != args.len() {
                     return Err(bad());
                 }

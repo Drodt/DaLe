@@ -37,7 +37,7 @@ impl TermPool {
             return Ok(r);
         }
         let od = &self[term.op()];
-        let (var_index, bind) = (od.var_index, od.bind);
+        let (var_index, bind) = (od.var_index(), od.bind());
         let r = if let Some(n) = var_index {
             self.mk_var(term.sort(), n + amount as u64)?
         } else {
@@ -61,7 +61,7 @@ impl TermPool {
     /// refer to the binders around `binder`.
     pub fn instantiate(&mut self, binder: TermIdx, repl: TermIdx) -> Result<TermIdx, LogicError> {
         let (b, var_sort) = self[self.op_of(binder)]
-            .bind
+            .bind()
             .ok_or(LogicError::NotABinder)?;
         let found = self.sort_of(repl);
         if !self.is_subsort(found, var_sort) {
@@ -89,7 +89,7 @@ impl TermPool {
             return Ok(r);
         }
         let od = &self[term.op()];
-        let (var_index, bind) = (od.var_index, od.bind);
+        let (var_index, bind) = (od.var_index(), od.bind());
         let r = if let Some(n) = var_index {
             if n == depth as u64 {
                 self.lift(repl, depth)?

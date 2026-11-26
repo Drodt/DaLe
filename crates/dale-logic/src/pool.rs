@@ -18,7 +18,7 @@ use std::sync::Arc;
 use crate::error::LogicError;
 use crate::ids::{OpDeclId, OpIdx, SortDeclId, SortIdx, TermIdx};
 use crate::sig::{GenArgPat, GenKind, GenParam, MetaValue, OpFlags, OpKind, Signature, SortPat};
-use crate::table::{RawTable, mix};
+use crate::table::{InternTable, mix};
 
 /// An argument of a generic declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -32,13 +32,25 @@ pub enum GenArg {
 /// An instantiated sort, e.g. `Seq<int>`.
 #[derive(Clone, Debug)]
 pub struct SortData {
-    pub decl: SortDeclId,
-    pub args: Box<[GenArg]>,
+    decl: SortDeclId,
+    args: Box<[GenArg]>,
     /// All proper ancestors except the top sort, sorted by index.
     ancestors: Box<[SortIdx]>,
 }
 
 impl SortData {
+    /// The (possibly generic) declaration this sort instantiates.
+    #[inline]
+    pub fn decl(&self) -> SortDeclId {
+        self.decl
+    }
+    /// The generic arguments of the declaration (empty for non-generic sorts).
+    #[inline]
+    pub fn args(&self) -> &[GenArg] {
+        &self.args
+    }
+    /// All proper supersorts except the top sort, sorted by index.
+    #[inline]
     pub fn ancestors(&self) -> &[SortIdx] {
         &self.ancestors
     }
@@ -47,22 +59,57 @@ impl SortData {
 /// An instantiated operator, e.g. `ifThenElse<int>` or `var<int>(0)`.
 #[derive(Clone, Debug)]
 pub struct OpData {
-    pub decl: OpDeclId,
-    pub generics: Box<[GenArg]>,
-    pub meta: Box<[MetaValue]>,
-    pub arg_sorts: Box<[SortIdx]>,
-    pub result: SortIdx,
-    pub flags: OpFlags,
-    /// `(argument position, sort of the bound variable)`.
-    pub bind: Option<(u32, SortIdx)>,
-    /// The de Bruijn index for bound variable operators.
-    pub var_index: Option<u64>,
+    decl: OpDeclId,
+    generics: Box<[GenArg]>,
+    meta: Box<[MetaValue]>,
+    arg_sorts: Box<[SortIdx]>,
+    result: SortIdx,
+    flags: OpFlags,
+    bind: Option<(u32, SortIdx)>,
+    var_index: Option<u64>,
 }
 
 impl OpData {
+    /// The (possibly generic) declaration this operator instantiates.
+    #[inline]
+    pub fn decl(&self) -> OpDeclId {
+        self.decl
+    }
+    #[inline]
+    pub fn generics(&self) -> &[GenArg] {
+        &self.generics
+    }
+    #[inline]
+    pub fn meta(&self) -> &[MetaValue] {
+        &self.meta
+    }
+    /// The sorts the subterms must be subsorts of.
+    #[inline]
+    pub fn arg_sorts(&self) -> &[SortIdx] {
+        &self.arg_sorts
+    }
     #[inline]
     pub fn arity(&self) -> usize {
         self.arg_sorts.len()
+    }
+    /// The sort of every term with this operator.
+    #[inline]
+    pub fn result(&self) -> SortIdx {
+        self.result
+    }
+    #[inline]
+    pub fn flags(&self) -> OpFlags {
+        self.flags
+    }
+    /// `(argument position, sort of the bound variable)` for binders.
+    #[inline]
+    pub fn bind(&self) -> Option<(u32, SortIdx)> {
+        self.bind
+    }
+    /// The de Bruijn index, for bound variable operators.
+    #[inline]
+    pub fn var_index(&self) -> Option<u64> {
+        self.var_index
     }
 }
 
@@ -107,6 +154,18 @@ impl Term {
     }
 }
 
+/// A snapshot of how much a [`TermPool`] holds, taken with [`TermPool::checkpoint`] and used with
+/// [`TermPool::rollback`] to throw away everything created in between.
+///
+/// Because the pool is append-only and everything refers only to *earlier* entries, forgetting
+/// the most recent entries never leaves a dangling reference among the survivors. This is meant
+/// for speculative work, e.g. building the terms of a rule application that is then rejected, or
+/// the instances of a failed proof branch, without keeping the garbage around.
+///
+/// Indices created after the checkpoint (sorts, operators and terms) are invalid after the
+/// rollback and must not be used any more; using one is either a panic or, if the slot has been
+/// reused by a new entry, a silently different term. A checkpoint can only be used on the pool
+/// that created it, and only while the pool has not been rolled back past it.
 #[derive(Clone, Copy, Debug)]
 pub struct Checkpoint {
     sorts: usize,
@@ -115,38 +174,59 @@ pub struct Checkpoint {
     args: usize,
 }
 
+// Hashing of intern keys.
+//
+// The tables only store `u32` indices, so the hash of an entry is recomputed from its key (the
+// functions below take the key's parts, which is exactly what the entry's data holds). All of
+// them fold the parts of a key into one `u64` with [`mix`], starting from a different seed per
+// kind of key so that e.g. a sort and an operator with the same numbers do not collide. The
+// table scrambles the high bits into the low ones itself, so these only have to be cheap and
+// order-sensitive. They are not meant to be collision resistant against adversarial input.
+
+/// Folds one generic argument into `h`. The tag (1 = sort, 2 = constant) keeps `Sort(5)` and
+/// `Const(5)` apart.
 fn hash_gen(h: u64, a: &GenArg) -> u64 {
     match a {
-        GenArg::Sort(s) => mix(mix(h, 1), s.0 as u64),
-        GenArg::Const(t) => mix(mix(h, 2), t.0 as u64),
+        GenArg::Sort(s) => mix(mix(h, 1), s.as_u32() as u64),
+        GenArg::Const(t) => mix(mix(h, 2), t.as_u32() as u64),
     }
 }
 
+/// Key of an instantiated sort: the declaration and its generic arguments.
 fn hash_sort(decl: SortDeclId, args: &[GenArg]) -> u64 {
-    args.iter().fold(mix(0x5017, decl.0 as u64), hash_gen)
+    args.iter()
+        .fold(mix(0x5017, decl.as_u32() as u64), hash_gen)
 }
 
+/// Key of an instantiated operator: the declaration, generic arguments and meta values. The meta
+/// values are part of the key because `var<int>(0)` and `var<int>(1)` are different operators.
 fn hash_op(decl: OpDeclId, generics: &[GenArg], meta: &[MetaValue]) -> u64 {
-    let h = generics.iter().fold(mix(0x0b, decl.0 as u64), hash_gen);
+    let h = generics
+        .iter()
+        .fold(mix(0x0b, decl.as_u32() as u64), hash_gen);
     meta.iter()
         .fold(h, |h, MetaValue::Nat(n)| mix(mix(h, 3), *n))
 }
 
+/// Key of a term: its operator and the indices of its subterms, in order. Since subterms are
+/// themselves hash-consed, comparing indices is comparing the whole subterms, so this is `O(arity)`
+/// and does not depend on the size of the term.
 #[inline]
 fn hash_term(op: OpIdx, args: &[TermIdx]) -> u64 {
-    args.iter()
-        .fold(mix(0x7e, op.0 as u64), |h, a| mix(h, a.0 as u64))
+    args.iter().fold(mix(0x7e, op.as_u32() as u64), |h, a| {
+        mix(h, a.as_u32() as u64)
+    })
 }
 
 pub struct TermPool {
     pub(crate) sig: Arc<Signature>,
     sorts: Vec<SortData>,
-    sort_table: RawTable,
+    sort_table: InternTable,
     ops: Vec<OpData>,
-    op_table: RawTable,
+    op_table: InternTable,
     terms: Vec<Term>,
     args: Vec<TermIdx>,
-    term_table: RawTable,
+    term_table: InternTable,
     top: SortIdx,
     formula: SortIdx,
     pub(crate) var_decl: Option<OpDeclId>,
@@ -156,7 +236,7 @@ impl Index<TermIdx> for TermPool {
     type Output = Term;
     #[inline]
     fn index(&self, i: TermIdx) -> &Term {
-        &self.terms[i.0 as usize]
+        &self.terms[i.index()]
     }
 }
 
@@ -164,7 +244,7 @@ impl Index<SortIdx> for TermPool {
     type Output = SortData;
     #[inline]
     fn index(&self, i: SortIdx) -> &SortData {
-        &self.sorts[i.0 as usize]
+        &self.sorts[i.index()]
     }
 }
 
@@ -172,7 +252,7 @@ impl Index<OpIdx> for TermPool {
     type Output = OpData;
     #[inline]
     fn index(&self, i: OpIdx) -> &OpData {
-        &self.ops[i.0 as usize]
+        &self.ops[i.index()]
     }
 }
 
@@ -182,14 +262,14 @@ impl TermPool {
             var_decl: sig.bound_var(),
             sig,
             sorts: Vec::new(),
-            sort_table: RawTable::new(),
+            sort_table: InternTable::new(),
             ops: Vec::new(),
-            op_table: RawTable::new(),
+            op_table: InternTable::new(),
             terms: Vec::new(),
             args: Vec::new(),
-            term_table: RawTable::new(),
-            top: SortIdx(u32::MAX),
-            formula: SortIdx(u32::MAX),
+            term_table: InternTable::new(),
+            top: SortIdx::MAX,
+            formula: SortIdx::MAX,
         };
         let (top, formula) = (pool.sig.top(), pool.sig.formula());
         // The signature builder guarantees that both are non-generic and extend nothing.
@@ -217,18 +297,18 @@ impl TermPool {
     /// The subterms of `t`.
     #[inline]
     pub fn subs_of(&self, t: TermIdx) -> &[TermIdx] {
-        let t = &self.terms[t.0 as usize];
+        let t = &self.terms[t.index()];
         &self.args[t.args_start as usize..(t.args_start + t.args_len) as usize]
     }
 
     #[inline]
     pub fn sort_of(&self, t: TermIdx) -> SortIdx {
-        self.terms[t.0 as usize].sort
+        self.terms[t.index()].sort
     }
 
     #[inline]
     pub fn op_of(&self, t: TermIdx) -> OpIdx {
-        self.terms[t.0 as usize].op
+        self.terms[t.index()].op
     }
 
     /// Whether `t` is a formula, i.e. its sort is the formula sort or a subsort of it.
@@ -252,7 +332,7 @@ impl TermPool {
     /// `a <= b` in the sort hierarchy (reflexive).
     #[inline]
     pub fn is_subsort(&self, a: SortIdx, b: SortIdx) -> bool {
-        a == b || b == self.top || self.sorts[a.0 as usize].ancestors.binary_search(&b).is_ok()
+        a == b || b == self.top || self.sorts[a.index()].ancestors.binary_search(&b).is_ok()
     }
 
     // ---------------------------------------------------------------- sorts
@@ -264,29 +344,22 @@ impl TermPool {
             let d = &self.sorts[i as usize];
             d.decl == decl && *d.args == *args
         });
-        if let Ok(i) = found {
-            return Ok(SortIdx(i));
+        if let Some(i) = found {
+            return Ok(SortIdx::from_u32(i));
         }
         let sig = self.sig.clone();
         let d = sig.sort_decl(decl);
-        self.check_generics(&d.params, args)?;
+        self.check_generics(&sig, &d.params, args)?;
         let mut anc = Vec::new();
         for e in &d.extends {
-            let s = self.inst_sort(e, args)?;
+            let s = self.inst_sort(&sig, e, args)?;
             anc.push(s);
-            anc.extend_from_slice(&self.sorts[s.0 as usize].ancestors);
+            anc.extend_from_slice(&self.sorts[s.index()].ancestors);
         }
         anc.retain(|&s| s != self.top);
         anc.sort_unstable();
         anc.dedup();
-        // Creating the supersorts may have changed the table: look the slot up again.
-        let slot = self
-            .sort_table
-            .find(h, |i| {
-                let d = &self.sorts[i as usize];
-                d.decl == decl && *d.args == *args
-            })
-            .expect_err("sort created while instantiating its supersorts");
+        // Instantiating the supersorts cannot have created this sort: they are declared before it.
         let idx = self.sorts.len() as u32;
         self.sorts.push(SortData {
             decl,
@@ -294,16 +367,17 @@ impl TermPool {
             ancestors: anc.into(),
         });
         let sorts = &self.sorts;
-        self.sort_table.insert_at(slot, idx, |i| {
+        self.sort_table.insert(h, idx, |i| {
             let d = &sorts[i as usize];
             hash_sort(d.decl, &d.args)
         });
-        Ok(SortIdx(idx))
+        Ok(SortIdx::from_u32(idx))
     }
 
     /// Instantiates a pattern of a declaration with the given generic arguments.
     pub(crate) fn inst_sort(
         &mut self,
+        sig: &Signature,
         pat: &SortPat,
         generics: &[GenArg],
     ) -> Result<SortIdx, LogicError> {
@@ -316,7 +390,7 @@ impl TermPool {
                 let mut v = Vec::with_capacity(args.len());
                 for a in args {
                     v.push(match a {
-                        GenArgPat::Sort(p) => GenArg::Sort(self.inst_sort(p, generics)?),
+                        GenArgPat::Sort(p) => GenArg::Sort(self.inst_sort(sig, p, generics)?),
                         GenArgPat::Const(i) => match generics.get(*i as usize) {
                             Some(c @ GenArg::Const(_)) => *c,
                             _ => return Err(LogicError::GenericKind(*i as usize)),
@@ -328,7 +402,12 @@ impl TermPool {
         }
     }
 
-    fn check_generics(&mut self, params: &[GenParam], args: &[GenArg]) -> Result<(), LogicError> {
+    fn check_generics(
+        &mut self,
+        sig: &Signature,
+        params: &[GenParam],
+        args: &[GenArg],
+    ) -> Result<(), LogicError> {
         if params.len() != args.len() {
             return Err(LogicError::GenericArity {
                 expected: params.len(),
@@ -339,12 +418,12 @@ impl TermPool {
             match (&p.kind, a) {
                 (GenKind::Sort, GenArg::Sort(_)) => {}
                 (GenKind::Const(pat), GenArg::Const(t)) => {
-                    let term = &self.terms[t.0 as usize];
+                    let term = &self.terms[t.index()];
                     if term.loose != 0 {
                         return Err(LogicError::ConstNotClosed(i));
                     }
                     let found = term.sort;
-                    let expected = self.inst_sort(pat, &args[..i])?;
+                    let expected = self.inst_sort(sig, pat, &args[..i])?;
                     if !self.is_subsort(found, expected) {
                         return Err(LogicError::ConstSort {
                             index: i,
@@ -373,12 +452,12 @@ impl TermPool {
             let d = &ops[i as usize];
             d.decl == decl && *d.generics == *generics && *d.meta == *meta
         };
-        if let Ok(i) = self.op_table.find(h, |i| eq(&self.ops, i)) {
-            return Ok(OpIdx(i));
+        if let Some(i) = self.op_table.find(h, |i| eq(&self.ops, i)) {
+            return Ok(OpIdx::from_u32(i));
         }
         let sig = self.sig.clone();
         let d = sig.op_decl(decl);
-        self.check_generics(&d.generics, generics)?;
+        self.check_generics(&sig, &d.generics, generics)?;
         if d.meta.len() != meta.len() {
             return Err(LogicError::MetaArity {
                 expected: d.meta.len(),
@@ -392,22 +471,17 @@ impl TermPool {
         }
         let mut arg_sorts = Vec::with_capacity(d.args.len());
         for a in &d.args {
-            arg_sorts.push(self.inst_sort(a, generics)?);
+            arg_sorts.push(self.inst_sort(&sig, a, generics)?);
         }
-        let result = self.inst_sort(&d.result, generics)?;
+        let result = self.inst_sort(&sig, &d.result, generics)?;
         let bind = match &d.bind {
-            Some(b) => Some((b.arg, self.inst_sort(&b.var_sort, generics)?)),
+            Some(b) => Some((b.arg, self.inst_sort(&sig, &b.var_sort, generics)?)),
             None => None,
         };
         let var_index = match (d.kind, meta) {
             (OpKind::BoundVar, [MetaValue::Nat(n)]) => Some(*n),
             _ => None,
         };
-        // Instantiating sorts does not touch the operator table, so the slot is still valid.
-        let slot = self
-            .op_table
-            .find(h, |i| eq(&self.ops, i))
-            .expect_err("operator created twice");
         let idx = self.ops.len() as u32;
         self.ops.push(OpData {
             decl,
@@ -420,11 +494,11 @@ impl TermPool {
             var_index,
         });
         let ops = &self.ops;
-        self.op_table.insert_at(slot, idx, |i| {
+        self.op_table.insert(h, idx, |i| {
             let d = &ops[i as usize];
             hash_op(d.decl, &d.generics, &d.meta)
         });
-        Ok(OpIdx(idx))
+        Ok(OpIdx::from_u32(idx))
     }
 
     // ---------------------------------------------------------------- terms
@@ -432,7 +506,7 @@ impl TermPool {
     /// Creates (or finds) the term `op(args)`, checking the number and sorts of the arguments
     /// and, for binders, the sorts of the variables bound in the bound argument.
     pub fn mk(&mut self, op: OpIdx, args: &[TermIdx]) -> Result<TermIdx, LogicError> {
-        let od = &self.ops[op.0 as usize];
+        let od = &self.ops[op.index()];
         if od.arg_sorts.len() != args.len() {
             return Err(LogicError::ArgCount {
                 expected: od.arg_sorts.len(),
@@ -440,7 +514,7 @@ impl TermPool {
             });
         }
         for (index, (a, &expected)) in args.iter().zip(&od.arg_sorts).enumerate() {
-            let found = self.terms[a.0 as usize].sort;
+            let found = self.terms[a.index()].sort;
             if !self.is_subsort(found, expected) {
                 return Err(LogicError::ArgSort {
                     index,
@@ -454,37 +528,36 @@ impl TermPool {
         }
         let bind = od.bind;
         let h = hash_term(op, args);
-        let slot = match self.find_term(h, op, args) {
-            Ok(t) => return Ok(t),
-            Err(slot) => slot,
-        };
+        if let Some(t) = self.find_term(h, op, args) {
+            return Ok(t);
+        }
         // Only new terms need the binder check: an existing one has passed it.
         if let Some((i, var_sort)) = bind {
             self.check_bound(args[i as usize], 0, var_sort, &mut HashSet::new())?;
         }
-        Ok(self.insert_term(slot, h, op, args))
+        Ok(self.insert_term(h, op, args))
     }
 
     /// Like [`mk`](Self::mk) but without any check. The caller guarantees the argument count,
     /// argument sorts and binder sorts. Violations are not memory unsafe but make the term
     /// ill-formed.
     pub fn mk_unchecked(&mut self, op: OpIdx, args: &[TermIdx]) -> TermIdx {
-        debug_assert_eq!(self.ops[op.0 as usize].arg_sorts.len(), args.len());
+        debug_assert_eq!(self.ops[op.index()].arg_sorts.len(), args.len());
         let h = hash_term(op, args);
         match self.find_term(h, op, args) {
-            Ok(t) => t,
-            Err(slot) => self.insert_term(slot, h, op, args),
+            Some(t) => t,
+            None => self.insert_term(h, op, args),
         }
     }
 
     #[inline]
-    fn find_term(&self, h: u64, op: OpIdx, args: &[TermIdx]) -> Result<TermIdx, usize> {
+    fn find_term(&self, h: u64, op: OpIdx, args: &[TermIdx]) -> Option<TermIdx> {
         self.term_table
             .find(h, |i| {
                 let t = &self.terms[i as usize];
                 t.op == op && self.args_of(t) == args
             })
-            .map(TermIdx)
+            .map(TermIdx::from_u32)
     }
 
     #[inline]
@@ -492,16 +565,15 @@ impl TermPool {
         &self.args[t.args_start as usize..(t.args_start + t.args_len) as usize]
     }
 
-    fn insert_term(&mut self, slot: usize, h: u64, op: OpIdx, args: &[TermIdx]) -> TermIdx {
-        let _ = h;
-        let od = &self.ops[op.0 as usize];
+    fn insert_term(&mut self, h: u64, op: OpIdx, args: &[TermIdx]) -> TermIdx {
+        let od = &self.ops[op.index()];
         let mut loose = match od.var_index {
             Some(n) => u32::try_from(n + 1).expect("de Bruijn index too large"),
             None => 0,
         };
         let mut rigid = od.flags.rigid;
         for (i, a) in args.iter().enumerate() {
-            let t = &self.terms[a.0 as usize];
+            let t = &self.terms[a.index()];
             let l = match od.bind {
                 Some((b, _)) if b as usize == i => t.loose.saturating_sub(1),
                 _ => t.loose,
@@ -522,14 +594,14 @@ impl TermPool {
             rigid,
         });
         let (terms, all_args) = (&self.terms, &self.args);
-        self.term_table.insert_at(slot, idx, |i| {
+        self.term_table.insert(h, idx, |i| {
             let t = &terms[i as usize];
             hash_term(
                 t.op,
                 &all_args[t.args_start as usize..(t.args_start + t.args_len) as usize],
             )
         });
-        TermIdx(idx)
+        TermIdx::from_u32(idx)
     }
 
     /// Checks that every variable of `t` that is bound by the binder being built (index `depth`
@@ -541,11 +613,11 @@ impl TermPool {
         var_sort: SortIdx,
         seen: &mut HashSet<(TermIdx, u32)>,
     ) -> Result<(), LogicError> {
-        let term = &self.terms[t.0 as usize];
+        let term = &self.terms[t.index()];
         if term.loose <= depth || !seen.insert((t, depth)) {
             return Ok(());
         }
-        let od = &self.ops[term.op.0 as usize];
+        let od = &self.ops[term.op.index()];
         if let Some(n) = od.var_index {
             // `loose > depth` means n >= depth.
             // TODO: relax the equality to subsorts if bound variables may be instantiated with
@@ -626,7 +698,7 @@ impl TermPool {
                 Some(GenArg::Const(_)) => false,
             },
             SortPat::Inst { decl, args } => {
-                let sd = &self.sorts[s.0 as usize];
+                let sd = &self.sorts[s.index()];
                 let target = if sd.decl == *decl {
                     Some(s)
                 } else if exact {
@@ -635,10 +707,10 @@ impl TermPool {
                     sd.ancestors
                         .iter()
                         .copied()
-                        .find(|a| self.sorts[a.0 as usize].decl == *decl)
+                        .find(|a| self.sorts[a.index()].decl == *decl)
                 };
                 let Some(t) = target else { return false };
-                let sargs = &self.sorts[t.0 as usize].args;
+                let sargs = &self.sorts[t.index()].args;
                 if sargs.len() != args.len() {
                     return false;
                 }
@@ -686,23 +758,8 @@ impl TermPool {
         self.ops.truncate(cp.ops);
         self.terms.truncate(cp.terms);
         self.args.truncate(cp.args);
-        let sorts = &self.sorts;
-        self.sort_table.reset_to(cp.sorts as u32, |i| {
-            let d = &sorts[i as usize];
-            hash_sort(d.decl, &d.args)
-        });
-        let ops = &self.ops;
-        self.op_table.reset_to(cp.ops as u32, |i| {
-            let d = &ops[i as usize];
-            hash_op(d.decl, &d.generics, &d.meta)
-        });
-        let (terms, args) = (&self.terms, &self.args);
-        self.term_table.reset_to(cp.terms as u32, |i| {
-            let t = &terms[i as usize];
-            hash_term(
-                t.op,
-                &args[t.args_start as usize..(t.args_start + t.args_len) as usize],
-            )
-        });
+        self.sort_table.truncate(cp.sorts as u32);
+        self.op_table.truncate(cp.ops as u32);
+        self.term_table.truncate(cp.terms as u32);
     }
 }

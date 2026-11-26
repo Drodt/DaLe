@@ -1,84 +1,57 @@
-//! A minimal open-addressing hash table from hashes to `u32` indices. The keys live elsewhere
-//! (in the pool's vectors); the caller supplies hashing and equality.
+//! The intern tables of the pool: maps from a key's hash to the `u32` index of the entry with that
+//! key. The keys live elsewhere (in the pool's vectors), so the tables only store 4 bytes per
+//! entry and the caller supplies hashing and equality.
+//!
+//! This is a thin wrapper around `hashbrown::HashTable`, which probes groups of control bytes with
+//! SIMD and compares a 7-bit tag of the hash first, so most non-matching entries are rejected
+//! without touching the entry's data.
 
-const EMPTY: u32 = u32::MAX;
+use hashbrown::HashTable;
 
-#[derive(Clone)]
-pub(crate) struct RawTable {
-    slots: Vec<u32>,
-    len: usize,
-}
-
+/// Combines the running hash `h` with the next value `v`: rotate, xor, multiply (the "Fx" scheme
+/// of rustc's hasher, with a 64-bit odd constant derived from the golden ratio).
+///
+/// It is order-sensitive (`mix(mix(h, a), b) != mix(mix(h, b), a)` in general), which tuples and
+/// argument lists need, and costs three cheap instructions per value. Its weakness is that the
+/// *low* bits of the result depend only on the low bits of the input; [`InternTable`] therefore
+/// rotates the hash before use (see [`scramble`]). It is not a cryptographic or DoS-resistant
+/// hash.
 #[inline]
 pub(crate) fn mix(h: u64, v: u64) -> u64 {
     (h.rotate_left(5) ^ v).wrapping_mul(0x517c_c1b7_2722_0a95)
 }
 
-impl RawTable {
+/// `hashbrown` takes the bucket from the low bits of a hash and a 7-bit tag from the top bits.
+/// The multiplication in [`mix`] leaves the high bits well mixed and the low bits poorly mixed, so
+/// the hash is rotated to move good bits down (rustc's `FxHasher` does the same in `finish`).
+#[inline]
+fn scramble(hash: u64) -> u64 {
+    hash.rotate_left(26)
+}
+
+#[derive(Default)]
+pub(crate) struct InternTable(HashTable<u32>);
+
+impl InternTable {
     pub fn new() -> Self {
-        Self {
-            slots: vec![EMPTY; 16],
-            len: 0,
-        }
+        Self(HashTable::new())
     }
 
+    /// The index of an entry with this hash that satisfies `eq`.
     #[inline]
-    fn start(&self, hash: u64) -> usize {
-        ((hash ^ (hash >> 29)) as usize) & (self.slots.len() - 1)
+    pub fn find(&self, hash: u64, mut eq: impl FnMut(u32) -> bool) -> Option<u32> {
+        self.0.find(scramble(hash), |&i| eq(i)).copied()
     }
 
-    /// `Ok(index)` if an entry with this hash satisfies `eq`; otherwise `Err(slot)`, the slot an
-    /// insertion of this key has to use. The slot is only valid until the table is modified.
-    #[inline]
-    pub fn find(&self, hash: u64, mut eq: impl FnMut(u32) -> bool) -> Result<u32, usize> {
-        let mask = self.slots.len() - 1;
-        let mut i = self.start(hash);
-        loop {
-            let s = self.slots[i];
-            if s == EMPTY {
-                return Err(i);
-            }
-            if eq(s) {
-                return Ok(s);
-            }
-            i = (i + 1) & mask;
-        }
+    /// Adds `idx`, whose key must not be in the table yet. `hash_of` computes the hash of any
+    /// entry, including `idx`; it is used when the table grows.
+    pub fn insert(&mut self, hash: u64, idx: u32, hash_of: impl Fn(u32) -> u64) {
+        self.0
+            .insert_unique(scramble(hash), idx, |&i| scramble(hash_of(i)));
     }
 
-    /// Inserts `idx` at a slot returned by [`find`](Self::find). `hash_of` must already know `idx`.
-    pub fn insert_at(&mut self, slot: usize, idx: u32, hash_of: impl Fn(u32) -> u64) {
-        debug_assert_eq!(self.slots[slot], EMPTY);
-        self.slots[slot] = idx;
-        self.len += 1;
-        if self.len * 2 > self.slots.len() {
-            self.grow(hash_of);
-        }
-    }
-
-    fn grow(&mut self, hash_of: impl Fn(u32) -> u64) {
-        let new_len = self.slots.len() * 2;
-        let old = std::mem::replace(&mut self.slots, vec![EMPTY; new_len]);
-        for idx in old.into_iter().filter(|&s| s != EMPTY) {
-            self.place(idx, hash_of(idx));
-        }
-    }
-
-    fn place(&mut self, idx: u32, hash: u64) {
-        let mask = self.slots.len() - 1;
-        let mut i = self.start(hash);
-        while self.slots[i] != EMPTY {
-            i = (i + 1) & mask;
-        }
-        self.slots[i] = idx;
-    }
-
-    /// Forgets all entries and re-inserts `0..count` (used when a pool is rolled back).
-    pub fn reset_to(&mut self, count: u32, hash_of: impl Fn(u32) -> u64) {
-        let cap = (count as usize * 4).next_power_of_two().max(16);
-        self.slots = vec![EMPTY; cap];
-        self.len = count as usize;
-        for idx in 0..count {
-            self.place(idx, hash_of(idx));
-        }
+    /// Forgets all entries with index `>= count` (used when a pool is rolled back).
+    pub fn truncate(&mut self, count: u32) {
+        self.0.retain(|i| *i < count);
     }
 }
