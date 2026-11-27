@@ -15,7 +15,7 @@ fn setup(seed: u64, n: usize, depth: u32) -> (Dale, Vec<F>, Vec<TermIdx>) {
 
 #[test]
 fn generator_is_deterministic() {
-    // pinned values: tools/prop-bench/PropBench.java checks the same ones
+    // pinned values
     let mut r = Rng(0x9E37_79B9_7F4A_7C15);
     let v: Vec<u64> = (0..3).map(|_| r.next()).collect();
     assert_eq!(
@@ -61,6 +61,47 @@ fn matching_counts() {
         .map(|f| if matches!(f, F::Atom(_)) { 0 } else { 2 })
         .sum();
     assert_eq!(match_all(&d, &seqs), expect);
+    assert_eq!(match_all_indexed(&d, &seqs), expect);
+}
+
+/// The index finds exactly the rules of the head operator, and `close` on the succedent.
+#[test]
+fn index_candidates_follow_the_head() {
+    let (d, fs, ts) = setup(13, 200, 4);
+    let mut out = Vec::new();
+    for (f, t) in fs.iter().zip(&ts) {
+        for side in [Side::Antecedent, Side::Succedent] {
+            d.index.sequent_candidates(&d.pool, side, *t, &mut out);
+            out.sort();
+            let mut expect: Vec<RuleId> = (0..RULES.len() as RuleId)
+                .filter(|&r| rule_side(r as usize) == side)
+                .filter(|&r| {
+                    let name = RULES[r as usize];
+                    name == "close"
+                        || matches!(
+                            (f, &name[..3]),
+                            (F::Not(..), "not")
+                                | (F::And(..), "and")
+                                | (F::Or(..), "orL" | "orR")
+                                | (F::Imp(..), "imp")
+                        )
+                })
+                .collect();
+            expect.sort();
+            assert_eq!(out, expect, "{} on {side:?}", to_key(f));
+        }
+    }
+}
+
+/// The indexed proof search builds the same proof as the plain one.
+#[test]
+fn indexed_saturation_is_the_same() {
+    let (mut d, _, ts) = setup(5, 200, 5);
+    for t in &ts {
+        let plain = saturate(&mut d, *t, None);
+        assert_eq!(saturate_indexed(&mut d, *t, false, None), plain);
+        assert_eq!(saturate_indexed(&mut d, *t, true, None), plain);
+    }
 }
 
 #[test]

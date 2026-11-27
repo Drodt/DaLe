@@ -934,6 +934,109 @@ mod matching {
         assert_eq!(cand(p), vec![2]);
         assert_eq!(ix.num_wild(), 2);
     }
+
+    /// Rules with sequent finds, for the index and [`match_sequent_at`]: `0: and(x, y) ==>`,
+    /// `1: ==> and(x, y)`, `2: \assumes(phi ==>) ==> phi`, `3: and(x, y) ==> phi`, and the term
+    /// find `4: and(x, y)`.
+    fn sequent_rules(f: &mut Fx) -> Vec<Rule> {
+        let mut rules = Vec::new();
+        for i in 0..5 {
+            let mut r = rb(f, &format!("r{i}"));
+            let x = r.declare_sv(f.names.intern("x"), SvKind::Formula, SortReq::Any);
+            let y = r.declare_sv(f.names.intern("y"), SvKind::Formula, SortReq::Any);
+            let phi = r.declare_sv(f.names.intern("phi"), SvKind::Formula, SortReq::Any);
+            let (px, py, pphi) = (r.sv(x).unwrap(), r.sv(y).unwrap(), r.sv(phi).unwrap());
+            let and = r.app(f.and, &[], &[], &[px, py]).unwrap();
+            match i {
+                0 => r.find_sequent(Some(and), None),
+                1 => r.find_sequent(None, Some(and)),
+                2 => {
+                    r.find_sequent(None, Some(pphi));
+                    r.assume(Side::Antecedent, pphi);
+                }
+                3 => r.find_sequent(Some(and), Some(pphi)),
+                _ => r.find_term(and),
+            }
+            rules.push(r.finish().unwrap());
+        }
+        rules
+    }
+
+    #[test]
+    fn index_sequent_candidates() {
+        let mut f = fx();
+        let rules = sequent_rules(&mut f);
+        let ix = RuleIndex::build(&f.pool, &rules);
+        let p = f.c(f.p);
+        let pp = f.and(p, p);
+        let mut out = Vec::new();
+        let mut cand = |side: Option<Side>, t: TermIdx| {
+            match side {
+                Some(side) => ix.sequent_candidates(&f.pool, side, t, &mut out),
+                None => ix.candidates(&f.pool, t, &mut out),
+            }
+            let mut v = out.clone();
+            v.sort();
+            v
+        };
+        assert_eq!(cand(Some(Side::Antecedent), pp), vec![0, 3]);
+        assert_eq!(cand(Some(Side::Antecedent), p), Vec::<RuleId>::new());
+        assert_eq!(cand(Some(Side::Succedent), pp), vec![1, 2, 3]);
+        assert_eq!(cand(Some(Side::Succedent), p), vec![2, 3]);
+        // term finds and sequent finds do not mix
+        assert_eq!(cand(None, pp), vec![4]);
+        assert_eq!(ix.num_wild(), 0);
+        assert_eq!(ix.num_wild_sequent(Side::Antecedent), 0);
+        assert_eq!(ix.num_wild_sequent(Side::Succedent), 2);
+    }
+
+    #[test]
+    fn match_sequent_at_one_formula() {
+        let mut f = fx();
+        let rules = sequent_rules(&mut f);
+        let p = f.c(f.p);
+        let pp = f.and(p, p);
+        // pp, p ==> p, pp
+        let seq = Sequent::new()
+            .add_all(&f.pool, Side::Antecedent, &[pp, p])
+            .unwrap()
+            .sequent
+            .add_all(&f.pool, Side::Succedent, &[p, pp])
+            .unwrap()
+            .sequent;
+        let at = |rule: &Rule, focus: Option<(Side, usize)>| {
+            let mut b = Bindings::new(rule);
+            let mut found = Vec::new();
+            let mut k = |m: &Bindings| {
+                found.push(m.matched().to_vec());
+                ControlFlow::Continue(())
+            };
+            let _ = match focus {
+                Some((side, i)) => match_sequent_at(&f.pool, rule, &seq, side, i, &mut b, &mut k),
+                None => match_sequent(&f.pool, rule, &seq, &mut b, &mut k),
+            };
+            found
+        };
+        let (a, s) = (Side::Antecedent, Side::Succedent);
+        assert_eq!(at(&rules[0], Some((a, 0))), vec![vec![(a, 0)]]);
+        assert!(at(&rules[0], Some((a, 1))).is_empty());
+        // no find part on the focused side, or no such formula
+        assert!(at(&rules[0], Some((s, 1))).is_empty());
+        assert!(at(&rules[0], Some((a, 5))).is_empty());
+        assert_eq!(at(&rules[1], Some((s, 1))), vec![vec![(s, 1)]]);
+        // the assumes part still ranges over its side
+        assert_eq!(at(&rules[2], Some((s, 0))), vec![vec![(s, 0), (a, 1)]]);
+        assert_eq!(at(&rules[2], Some((s, 1))), vec![vec![(s, 1), (a, 0)]]);
+        // a find with two parts: the other part ranges over its side, antecedent first
+        assert_eq!(
+            at(&rules[3], Some((a, 0))),
+            vec![vec![(a, 0), (s, 0)], vec![(a, 0), (s, 1)]]
+        );
+        assert_eq!(at(&rules[3], Some((s, 1))), vec![vec![(a, 0), (s, 1)]]);
+        assert_eq!(at(&rules[3], None).len(), 2);
+        // a term find is not a sequent find
+        assert!(at(&rules[4], Some((a, 0))).is_empty());
+    }
 }
 
 mod proof_tree {

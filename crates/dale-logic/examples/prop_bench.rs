@@ -1,12 +1,4 @@
 //! Benchmark of matching and rule application on the propositional workload (`tests/workload`).
-//! The KeY counterpart is `tools/prop-bench/PropBench.java`; both print the same table.
-//!
-//! ```text
-//! cargo run --release -p dale-logic --example prop_bench [-- <depth> <formulas> <problems>]
-//! ```
-//!
-//! Single-threaded. Each phase is run `ROUNDS` times after a warm-up and the best and median round
-//! are reported.
 
 #[path = "../tests/workload/mod.rs"]
 mod workload;
@@ -75,6 +67,28 @@ fn main() {
         best.as_nanos() as f64 / attempts as f64
     );
 
+    // ---- phase 1 through the rule index: both sides of every formula
+    assert_eq!(match_all_indexed(&d, &seqs), matches);
+    let mut all = Vec::new();
+    for r in 0..ROUNDS + 3 {
+        let t = Instant::now();
+        let n = match_all_indexed(&d, &seqs);
+        let e = t.elapsed();
+        assert_eq!(n, matches);
+        if r >= 3 {
+            all.push(e);
+        }
+    }
+    all.sort();
+    let unindexed = best;
+    println!(
+        "indexed: best {:>9.3} ms  median {:>9.3} ms   {:>7.1} ns/formula (best; without index {:.1})",
+        all[0].as_secs_f64() * 1e3,
+        all[all.len() / 2].as_secs_f64() * 1e3,
+        all[0].as_nanos() as f64 / fs.len() as f64,
+        unindexed.as_nanos() as f64 / fs.len() as f64
+    );
+
     // ---- phase 2: proof search with rule application, on one big conjunction
     let fs = corpus(2, n_prove, depth.min(5));
     let big = conjoin(&fs);
@@ -87,25 +101,6 @@ fn main() {
         stats = st;
         tautologies = closed as u32;
     }
-    let (mut best, mut best_apply, mut all) = (Duration::MAX, Duration::ZERO, Vec::new());
-    for r in 0..ROUNDS + 3 {
-        // a fresh pool per round: the term is rebuilt (untimed), the proof is timed
-        let mut d = Dale::new();
-        let t = d.build(&big);
-        let mut apply = Duration::ZERO;
-        let t0 = Instant::now();
-        let (s, _) = saturate(&mut d, t, Some(&mut apply));
-        let e = t0.elapsed();
-        assert_eq!(s, stats);
-        if r >= 3 {
-            if e < best {
-                best = e;
-                best_apply = apply;
-            }
-            all.push(e);
-        }
-    }
-    let med = median(&mut all);
     println!(
         "prove:  conjunction of {} formulas (closed: {}), {} rule applications, {} nodes, {} open goals",
         fs.len(),
@@ -114,20 +109,42 @@ fn main() {
         stats.nodes,
         stats.open
     );
-    println!(
-        "        best {:>9.3} ms  median {:>9.3} ms   {:>7.1} ns/application (best)",
-        best.as_secs_f64() * 1e3,
-        med.as_secs_f64() * 1e3,
-        best.as_nanos() as f64 / stats.apps as f64
-    );
-    println!(
-        "        of which applying (apply_rule + proof tree): {:>9.3} ms = {:>7.1} ns/application",
-        best_apply.as_secs_f64() * 1e3,
-        best_apply.as_nanos() as f64 / stats.apps as f64
-    );
-    let rest = best - best_apply;
-    println!(
-        "        rest (selecting the rule, matching, goal handling): {:>9.3} ms",
-        rest.as_secs_f64() * 1e3
-    );
+    type Search = fn(&mut Dale, TermIdx, Option<&mut Duration>) -> (Stats, bool);
+    let searches: [(&str, Search); 3] = [
+        ("all rules", saturate),
+        ("index, eager", |d, t, a| saturate_indexed(d, t, false, a)),
+        ("index, lazy", |d, t, a| saturate_indexed(d, t, true, a)),
+    ];
+    for (name, search) in searches {
+        let (mut best, mut best_apply, mut all) = (Duration::MAX, Duration::ZERO, Vec::new());
+        for r in 0..ROUNDS + 3 {
+            // a fresh pool per round: the term is rebuilt (untimed), the proof is timed
+            let mut d = Dale::new();
+            let t = d.build(&big);
+            let mut apply = Duration::ZERO;
+            let t0 = Instant::now();
+            let (s, _) = search(&mut d, t, Some(&mut apply));
+            let e = t0.elapsed();
+            assert_eq!(s, stats, "{name}: a different proof");
+            if r >= 3 {
+                if e < best {
+                    best = e;
+                    best_apply = apply;
+                }
+                all.push(e);
+            }
+        }
+        let med = median(&mut all);
+        println!(
+            "  {name:<13} best {:>9.3} ms  median {:>9.3} ms   {:>7.1} ns/application (best)",
+            best.as_secs_f64() * 1e3,
+            med.as_secs_f64() * 1e3,
+            best.as_nanos() as f64 / stats.apps as f64
+        );
+        println!(
+            "                applying (apply_rule + proof tree) {:>9.3} ms, rest (selecting, matching, goals) {:>9.3} ms",
+            best_apply.as_secs_f64() * 1e3,
+            (best - best_apply).as_secs_f64() * 1e3
+        );
+    }
 }

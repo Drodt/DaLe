@@ -1,7 +1,5 @@
 //! A propositional workload shared by the tests (`tests/prop.rs`) and the benchmark
-//! (`examples/prop_bench.rs`). The same workload exists on the KeY side
-//! (`tools/prop-bench/PropBench.java`): the formula generator, the rule set and the measured
-//! phases are defined identically, so the numbers can be compared.
+//! (`examples/prop_bench.rs`).
 //!
 //! Formulas come from a deterministic generator ([`Rng`], [`random_formula`]) as a small AST ([`F`]), which is
 //! built into pool terms ([`Dale::build`]) or printed in KeY syntax ([`to_key`]).
@@ -151,6 +149,10 @@ pub fn rule_side(rule: usize) -> Side {
 pub struct Dale {
     pub pool: TermPool,
     pub rules: Vec<Rule>,
+    /// The index of all rules (`RuleId` = position in `rules`).
+    pub index: RuleIndex,
+    /// The index of the eight junctor rules: its rule `i` is `rules[i + 1]`.
+    pub junctor_index: RuleIndex,
     atoms: Vec<OpDeclId>,
     not: OpDeclId,
     and: OpDeclId,
@@ -187,6 +189,8 @@ impl Dale {
         let mut dale = Dale {
             pool,
             rules: Vec::new(),
+            index: RuleIndex::default(),
+            junctor_index: RuleIndex::default(),
             atoms,
             not,
             and,
@@ -197,6 +201,8 @@ impl Dale {
         for name in RULES {
             rules.push(dale.make_rule(&sig, &mut n, name));
         }
+        dale.index = RuleIndex::build(&dale.pool, &rules);
+        dale.junctor_index = RuleIndex::build(&dale.pool, &rules[1..]);
         dale.rules = rules;
         dale
     }
@@ -362,6 +368,123 @@ pub fn saturate(d: &mut Dale, f: TermIdx, apply_time: Option<&mut Duration>) -> 
             &mut d.pool,
             &d.rules[i],
             i as RuleId,
+            &seq,
+            None,
+            &m,
+            SortCheck::Skip,
+        )
+        .unwrap();
+        let closes = applied.branches.is_empty();
+        let step = tree
+            .apply(g, applied.app, ViewId::ZERO, applied.branches)
+            .unwrap();
+        if let Some(t0) = t0 {
+            spent += t0.elapsed();
+        }
+        st.apps += 1;
+        if closes {
+            st.closed += 1;
+        } else {
+            let kids: Vec<NodeId> = tree.step(step).children().into_iter().collect();
+            stack.extend(kids.into_iter().rev());
+        }
+    }
+    st.nodes = tree.num_nodes() as u64;
+    let closed = tree.is_proof_closed();
+    if let Some(t) = apply_time {
+        *t += spent;
+    }
+    (st, closed)
+}
+
+/// Phase 1 through the index: for every formula and both sides, looks up the candidate junctor
+/// rules ([`Dale::junctor_index`]) and matches them at that formula. Returns the number of
+/// matches, which is that of [`match_all`].
+pub fn match_all_indexed(d: &Dale, seqs: &[(Sequent, Sequent)]) -> u64 {
+    let mut bs: Vec<Bindings> = d.rules.iter().map(Bindings::new).collect();
+    let mut out = Vec::new();
+    let mut n = 0;
+    for (l, r) in seqs {
+        for (side, seq) in [(Side::Antecedent, l), (Side::Succedent, r)] {
+            let f = seq.semisequent(side).as_slice()[0];
+            d.junctor_index
+                .sequent_candidates(&d.pool, side, f, &mut out);
+            for &c in &out {
+                let i = c as usize + 1;
+                let _ =
+                    match_sequent_at(&d.pool, &d.rules[i], seq, side, 0, &mut bs[i], &mut |_| {
+                        n += 1;
+                        ControlFlow::Continue(())
+                    });
+            }
+        }
+    }
+    n
+}
+
+/// Phase 2 through the index ([`Dale::index`]): the candidates of every formula of the goal are
+/// looked up, and the rule applied is the same as in [`saturate`], the smallest
+/// `(rule, formula index)` that matches, so the proof is the same. `lazy`: the candidates are
+/// sorted and matched in that order until one matches; otherwise every candidate is matched and
+/// the smallest match is taken.
+pub fn saturate_indexed(
+    d: &mut Dale,
+    f: TermIdx,
+    lazy: bool,
+    apply_time: Option<&mut Duration>,
+) -> (Stats, bool) {
+    let root = d.one_sided(f, Side::Succedent);
+    let mut tree = ProofTree::new(root);
+    let mut bs: Vec<Bindings> = d.rules.iter().map(Bindings::new).collect();
+    let mut stack = vec![tree.root()];
+    let mut st = Stats::default();
+    let mut spent = Duration::ZERO;
+    let timed = apply_time.is_some();
+    let mut out = Vec::new();
+    let mut cands: Vec<(RuleId, u32, Side)> = Vec::new();
+    while let Some(g) = stack.pop() {
+        let seq = tree.sequent(g).clone();
+        cands.clear();
+        for side in [Side::Antecedent, Side::Succedent] {
+            for (i, &t) in seq.semisequent(side).as_slice().iter().enumerate() {
+                d.index.sequent_candidates(&d.pool, side, t, &mut out);
+                cands.extend(out.iter().map(|&r| (r, i as u32, side)));
+            }
+        }
+        if lazy {
+            cands.sort_unstable_by_key(|&(r, i, _)| (r, i));
+        }
+        let mut hit: Option<((RuleId, u32), Bindings)> = None;
+        for &(r, i, side) in &cands {
+            if hit.as_ref().is_some_and(|(k, _)| *k <= (r, i)) {
+                if lazy {
+                    break;
+                }
+                continue;
+            }
+            let ri = r as usize;
+            let _ = match_sequent_at(
+                &d.pool,
+                &d.rules[ri],
+                &seq,
+                side,
+                i as usize,
+                &mut bs[ri],
+                &mut |m| {
+                    hit = Some(((r, i), m.clone()));
+                    ControlFlow::Break(())
+                },
+            );
+        }
+        let Some(((r, _), m)) = hit else {
+            st.open += 1;
+            continue;
+        };
+        let t0 = timed.then(Instant::now);
+        let applied = apply_rule(
+            &mut d.pool,
+            &d.rules[r as usize],
+            r,
             &seq,
             None,
             &m,

@@ -257,19 +257,19 @@ impl Ctx<'_> {
         })
     }
 
-    /// Matches the remaining `(side, pattern)` steps against sequent formulas, then the
-    /// `\assumes` patterns, then checks the conditions.
+    /// Matches the remaining find steps against sequent formulas, then the `\assumes` patterns,
+    /// then checks the conditions.
     fn steps(
         &self,
         b: &mut Bindings,
-        find: &[(Side, PatId)],
+        find: &[FindStep],
         assumes: usize,
         k: &mut dyn FnMut(&Bindings) -> ControlFlow<()>,
     ) -> ControlFlow<()> {
-        let (side, pat, rest_find, rest_assumes) = if let Some(((s, p), r)) = find.split_first() {
-            (*s, *p, r, assumes)
+        let (side, pat, at, rest_find, rest_assumes) = if let Some((f, r)) = find.split_first() {
+            (f.side, f.pat, f.at, r, assumes)
         } else if let Some(a) = self.rule.assumes().get(assumes) {
-            (a.side, a.pat, find, assumes + 1)
+            (a.side, a.pat, None, find, assumes + 1)
         } else {
             return if self.conds_hold(b) {
                 k(b)
@@ -277,7 +277,13 @@ impl Ctx<'_> {
                 ControlFlow::Continue(())
             };
         };
-        for (i, &f) in self.seq.semisequent(side).as_slice().iter().enumerate() {
+        let formulas = self.seq.semisequent(side).as_slice();
+        let range = match at {
+            Some(i) => i..(i + 1).min(formulas.len()),
+            None => 0..formulas.len(),
+        };
+        for i in range {
+            let f = formulas[i];
             let mark = b.mark();
             b.matched.push((side, i as u32));
             let r = if self.m(b, pat, f, 0) {
@@ -291,6 +297,15 @@ impl Ctx<'_> {
         }
         ControlFlow::Continue(())
     }
+}
+
+/// A part of a sequent find: its pattern is matched against the formulas of `side`, or only
+/// against the one at `at`.
+#[derive(Clone, Copy)]
+struct FindStep {
+    side: Side,
+    pat: PatId,
+    at: Option<usize>,
 }
 
 fn bind_slot(b: &mut Bindings, i: u32, v: GenArg) -> bool {
@@ -341,19 +356,62 @@ pub fn match_sequent(
     b: &mut Bindings,
     k: &mut dyn FnMut(&Bindings) -> ControlFlow<()>,
 ) -> ControlFlow<()> {
+    sequent_steps(pool, rule, seq, None, b, k)
+}
+
+/// Like [`match_sequent`], with the find part on `side` matched only against the formula at
+/// `index` of that side (a part on the other side still ranges over its side). This is how the
+/// candidates of [`RuleIndex::sequent_candidates`](crate::RuleIndex::sequent_candidates) are
+/// matched. Rules without a find part on `side` do not match.
+pub fn match_sequent_at(
+    pool: &TermPool,
+    rule: &Rule,
+    seq: &Sequent,
+    side: Side,
+    index: usize,
+    b: &mut Bindings,
+    k: &mut dyn FnMut(&Bindings) -> ControlFlow<()>,
+) -> ControlFlow<()> {
+    sequent_steps(pool, rule, seq, Some((side, index)), b, k)
+}
+
+fn sequent_steps(
+    pool: &TermPool,
+    rule: &Rule,
+    seq: &Sequent,
+    focus: Option<(Side, usize)>,
+    b: &mut Bindings,
+    k: &mut dyn FnMut(&Bindings) -> ControlFlow<()>,
+) -> ControlFlow<()> {
     let Find::Sequent { ante, succ } = rule.find() else {
         return ControlFlow::Continue(());
     };
-    let mut find = Vec::with_capacity(2);
-    if let Some(p) = ante {
-        find.push((Side::Antecedent, p));
+    // the antecedent part first: that is the order of `Bindings::matched`
+    let mut find = [FindStep {
+        side: Side::Antecedent,
+        pat: PatId(0),
+        at: None,
+    }; 2];
+    let mut n = 0;
+    let mut focused = focus.is_none();
+    for (side, pat) in [(Side::Antecedent, ante), (Side::Succedent, succ)] {
+        let Some(pat) = pat else { continue };
+        let at = match focus {
+            Some((s, i)) if s == side => {
+                focused = true;
+                Some(i)
+            }
+            _ => None,
+        };
+        find[n] = FindStep { side, pat, at };
+        n += 1;
     }
-    if let Some(p) = succ {
-        find.push((Side::Succedent, p));
+    if !focused {
+        return ControlFlow::Continue(());
     }
     let cx = Ctx { pool, rule, seq };
     let mark = b.mark();
-    let r = cx.steps(b, &find, 0, k);
+    let r = cx.steps(b, &find[..n], 0, k);
     b.undo(mark);
     r
 }

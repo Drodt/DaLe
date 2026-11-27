@@ -11,8 +11,8 @@
 //! sorts and the shape of the bound variable operator are fixed.
 //!
 //! Rules have a separate pattern layer ([`Rule`], [`RuleBuilder`]) that is matched against pool
-//! terms and sequents ([`match_term`], [`match_sequent`]); a [`RuleIndex`] finds the rules that
-//! can match a term.
+//! terms and sequents ([`match_term`], [`match_sequent`], [`match_sequent_at`]); a [`RuleIndex`]
+//! finds the rules that can match a term or a top-level formula.
 //!
 //! TODO: the dale-syn side still has to report the sort of the variable an operator binds, mark
 //! the bound variable operator, and reject duplicate numbers in `{..}` (at most one variable).
@@ -42,7 +42,7 @@ pub use display::Show;
 pub use error::LogicError;
 pub use ids::{NodeId, OpDeclId, OpIdx, SortDeclId, SortIdx, StepId, TermIdx, ViewId};
 pub use index::{RuleId, RuleIndex};
-pub use matcher::{Bindings, Instantiation, match_sequent, match_term};
+pub use matcher::{Bindings, Instantiation, match_sequent, match_sequent_at, match_term};
 pub use pattern::{
     Assumes, Cond, Find, GenPat, MetaPat, PatId, PatNode, PatternError, Rule, RuleBuilder, SortReq,
     SvDecl, SvId, SvKind,
