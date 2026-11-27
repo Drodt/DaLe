@@ -38,8 +38,9 @@ use crate::sequent::Sequent;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Application {
     pub rule: RuleId,
-    /// Where the `\find` matched (`None` for rules without position, e.g. cuts).
-    pub find: Option<PosInOccurrence>,
+    /// Where the `\find` matched: one position for a term find, one per formula for a sequent
+    /// find (antecedent first); empty for rules without find, e.g. cuts.
+    pub find: Box<[PosInOccurrence]>,
     /// For each `\assumes` formula, where in the sequent it was found.
     pub assumes: Box<[PosInOccurrence]>,
     pub inst: Instantiation,

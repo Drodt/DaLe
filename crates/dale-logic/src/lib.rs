@@ -18,6 +18,7 @@
 //! the bound variable operator, and reject duplicate numbers in `{..}` (at most one variable).
 //!
 
+mod apply;
 mod arena;
 mod display;
 mod error;
@@ -36,6 +37,7 @@ mod table;
 #[cfg(test)]
 mod tests;
 
+pub use apply::{Applied, ApplyError, apply_rule};
 pub use display::Show;
 pub use error::LogicError;
 pub use ids::{NodeId, OpDeclId, OpIdx, SortDeclId, SortIdx, StepId, TermIdx, ViewId};
@@ -45,6 +47,7 @@ pub use pattern::{
     Assumes, Cond, Find, GenPat, MetaPat, PatId, PatNode, PatternError, Rule, RuleBuilder, SortReq,
     SvDecl, SvId, SvKind,
 };
+pub use pattern::{GenTmpl, GoalTemplate, Replace, TmplId, TmplNode};
 pub use pool::{Checkpoint, FrozenPool, GenArg, OpData, SortData, Term, TermPool};
 pub use pos::{PosInOccurrence, PosInTerm, SortCheck};
 pub use proof::{Application, Branch, Node, NodeRange, ProofError, ProofTree, Step};

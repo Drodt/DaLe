@@ -942,7 +942,7 @@ mod proof_tree {
     fn app(rule: u32) -> Application {
         Application {
             rule,
-            find: None,
+            find: Box::new([]),
             assumes: Box::new([]),
             inst: Instantiation {
                 svs: Box::new([]),
@@ -1320,7 +1320,7 @@ mod fragments {
     fn app(rule: u32) -> Application {
         Application {
             rule,
-            find: None,
+            find: Box::new([]),
             assumes: Box::new([]),
             inst: Instantiation {
                 svs: Box::new([]),
@@ -1528,5 +1528,323 @@ mod fragments {
             tree.set_view(ViewId::from_u32(99), f.pool.fork().freeze()),
             Err(ProofError::UnknownView(ViewId::from_u32(99)))
         );
+    }
+}
+
+mod applying {
+    use std::ops::ControlFlow;
+
+    use super::*;
+
+    fn rb(f: &mut Fx, name: &str) -> RuleBuilder {
+        RuleBuilder::new(f.pool.signature().clone(), f.names.intern(name))
+    }
+
+    /// The first complete match of a term-find rule at `pos` (a position in `seq`).
+    fn first_match(f: &Fx, rule: &Rule, seq: &Sequent, pos: &PosInOccurrence) -> Option<Bindings> {
+        let t = pos.sub_term(&f.pool, seq).unwrap();
+        let mut b = Bindings::new(rule);
+        let mut found = None;
+        let _ = match_term(&f.pool, rule, seq, t, &mut b, &mut |m| {
+            found = Some(m.clone());
+            ControlFlow::Break(())
+        });
+        found
+    }
+
+    fn pos(side: Side, index: usize, path: &[u16]) -> PosInOccurrence {
+        PosInOccurrence::new(side, index, PosInTerm::from_path(path))
+    }
+
+    fn seq1(f: &Fx, side: Side, fs: &[TermIdx]) -> Sequent {
+        Sequent::new().add_all(&f.pool, side, fs).unwrap().sequent
+    }
+
+    #[test]
+    fn rewrite_with_a_repeated_variable() {
+        let mut f = fx();
+        // \find(phi & phi) \replacewith(phi)
+        let mut r = rb(&mut f, "eq_and");
+        let phi = r.declare_sv(f.names.intern("phi"), SvKind::Formula, SortReq::Any);
+        let pv = r.sv(phi).unwrap();
+        let and = r.app(f.and, &[], &[], &[pv, pv]).unwrap();
+        r.find_term(and);
+        let tv = r.tmpl_sv(phi).unwrap();
+        r.goal(GoalTemplate::new(Replace::Term(tv)));
+        let rule = r.finish().unwrap();
+        let (p, three, zero) = (f.c(f.p), f.c(f.three), f.c(f.zero));
+        let q = f.pool.mk_inferred(f.le, &[], &[three, zero]).unwrap();
+        let (qq, qp) = (f.and(q, q), f.and(q, p));
+        let top = f.and(qq, p);
+        let seq = seq1(&f, Side::Succedent, &[top]);
+        let at = pos(Side::Succedent, 0, &[0]);
+        let b = first_match(&f, &rule, &seq, &at).expect("matches");
+        let applied = apply_rule(
+            &mut f.pool,
+            &rule,
+            3,
+            &seq,
+            Some(&at),
+            &b,
+            SortCheck::Enforce,
+        )
+        .unwrap();
+        assert_eq!(applied.branches.len(), 1);
+        let expect = f.and(q, p);
+        assert_eq!(
+            applied.branches[0].sequent.succedent().as_slice(),
+            &[expect]
+        );
+        // the old sequent is untouched, and the record says what happened
+        assert_eq!(seq.succedent().as_slice(), &[top]);
+        assert_eq!(applied.app.rule, 3);
+        assert_eq!(&*applied.app.find, &[at.clone()]);
+        assert_eq!(applied.app.inst.svs[0], Some(q));
+        assert!(first_match(&f, &rule, &seq, &pos(Side::Succedent, 0, &[])).is_none());
+        let _ = qp;
+    }
+
+    #[test]
+    fn quantifier_removal_shifts_the_body() {
+        let mut f = fx();
+        let int = f.sort(f.int);
+        // \find(\all(phi)) \varcond(\noFreeVar(phi, 0)) \replacewith(phi): phi moves out of one
+        // binder, so its remaining free variables are lowered
+        let mut r = rb(&mut f, "all_unused");
+        let phi = r.declare_sv(f.names.intern("phi"), SvKind::Formula, SortReq::Any);
+        let pv = r.sv(phi).unwrap();
+        let all = r.app(f.all, &[GenPat::Slot(0)], &[], &[pv]).unwrap();
+        r.find_term(all);
+        r.cond(Cond::NoFreeVar { sv: phi, index: 0 });
+        let tv = r.tmpl_sv(phi).unwrap();
+        r.goal(GoalTemplate::new(Replace::Term(tv)));
+        let rule = r.finish().unwrap();
+        let (three, v0, v1) = (f.c(f.three), f.var(int, 0), f.var(int, 1));
+        let uses_outer = f.pool.mk_inferred(f.le, &[], &[v1, three]).unwrap();
+        let inner = f.all(int, uses_outer).unwrap();
+        let outer = f.all(int, inner).unwrap(); // closed: v1 is bound by the outer quantifier
+        let seq = seq1(&f, Side::Antecedent, &[outer]);
+        // at the inner quantifier (position [0]) the rule fires: le(v1, three) becomes le(v0, three)
+        let at = pos(Side::Antecedent, 0, &[0]);
+        let b = first_match(&f, &rule, &seq, &at).expect("matches");
+        let applied = apply_rule(
+            &mut f.pool,
+            &rule,
+            0,
+            &seq,
+            Some(&at),
+            &b,
+            SortCheck::Enforce,
+        )
+        .unwrap();
+        let lowered = f.pool.mk_inferred(f.le, &[], &[v0, three]).unwrap();
+        let expect = f.all(int, lowered).unwrap();
+        assert_eq!(
+            applied.branches[0].sequent.antecedent().as_slice(),
+            &[expect]
+        );
+        // the outer quantifier's body uses its variable: no match
+        assert!(first_match(&f, &rule, &seq, &pos(Side::Antecedent, 0, &[])).is_none());
+        // without the condition the rule would capture: the application reports it
+        let mut r = rb(&mut f, "all_bad");
+        let phi = r.declare_sv(f.names.intern("phi"), SvKind::Formula, SortReq::Any);
+        let pv = r.sv(phi).unwrap();
+        let all = r.app(f.all, &[GenPat::Slot(0)], &[], &[pv]).unwrap();
+        r.find_term(all);
+        let tv = r.tmpl_sv(phi).unwrap();
+        r.goal(GoalTemplate::new(Replace::Term(tv)));
+        let bad = r.finish().unwrap();
+        let at = pos(Side::Antecedent, 0, &[]);
+        let b = first_match(&f, &bad, &seq, &at).expect("matches");
+        assert!(matches!(
+            apply_rule(
+                &mut f.pool,
+                &bad,
+                0,
+                &seq,
+                Some(&at),
+                &b,
+                SortCheck::Enforce
+            ),
+            Err(ApplyError::CapturesBinder(_))
+        ));
+    }
+
+    #[test]
+    fn sequent_rules_branch_and_close() {
+        let mut f = fx();
+        let (p, three, zero) = (f.c(f.p), f.c(f.three), f.c(f.zero));
+        let q = f.pool.mk_inferred(f.le, &[], &[three, zero]).unwrap();
+        // andRight: \find(==> a & b) \replacewith(==> a) | \replacewith(==> b)
+        let mut r = rb(&mut f, "andRight");
+        let a = r.declare_sv(f.names.intern("a"), SvKind::Formula, SortReq::Any);
+        let bb = r.declare_sv(f.names.intern("b"), SvKind::Formula, SortReq::Any);
+        let (pa, pb) = (r.sv(a).unwrap(), r.sv(bb).unwrap());
+        let and = r.app(f.and, &[], &[], &[pa, pb]).unwrap();
+        r.find_sequent(None, Some(and));
+        let (ta, tb) = (r.tmpl_sv(a).unwrap(), r.tmpl_sv(bb).unwrap());
+        let first = f.names.intern("first");
+        let mut g1 = GoalTemplate::new(Replace::Sequent {
+            ante: vec![],
+            succ: vec![ta],
+        });
+        g1.label = Some(first);
+        r.goal(g1);
+        r.goal(GoalTemplate::new(Replace::Sequent {
+            ante: vec![],
+            succ: vec![tb],
+        }));
+        let and_right = r.finish().unwrap();
+        // close: \find(false-ish) : here a rule without goals, found as `p ==> p` style: antecedent
+        // formula x and succedent formula x
+        let mut r = rb(&mut f, "close");
+        let x = r.declare_sv(f.names.intern("x"), SvKind::Formula, SortReq::Any);
+        let px = r.sv(x).unwrap();
+        r.find_sequent(Some(px), None);
+        r.assume(Side::Succedent, px);
+        let close = r.finish().unwrap();
+
+        let pq = f.and(p, q);
+        let seq = Sequent::new()
+            .add(&f.pool, Side::Antecedent, p)
+            .unwrap()
+            .sequent
+            .add(&f.pool, Side::Succedent, pq)
+            .unwrap()
+            .sequent;
+        let mut b = Bindings::new(&and_right);
+        let mut m = None;
+        let _ = match_sequent(&f.pool, &and_right, &seq, &mut b, &mut |x| {
+            m = Some(x.clone());
+            ControlFlow::Break(())
+        });
+        let m = m.unwrap();
+        let applied = apply_rule(
+            &mut f.pool,
+            &and_right,
+            1,
+            &seq,
+            None,
+            &m,
+            SortCheck::Enforce,
+        )
+        .unwrap();
+        assert_eq!(applied.branches.len(), 2);
+        assert_eq!(applied.branches[0].label, Some(first));
+        assert_eq!(applied.branches[0].sequent.succedent().as_slice(), &[p]);
+        assert_eq!(applied.branches[1].sequent.succedent().as_slice(), &[q]);
+        assert_eq!(applied.branches[1].sequent.antecedent().as_slice(), &[p]);
+        assert_eq!(&*applied.app.find, &[pos(Side::Succedent, 0, &[])]);
+
+        // into a proof tree: two goals; the first closes with `close` (p |- p), the second stays
+        let mut tree = ProofTree::new(seq.clone());
+        let step = tree
+            .apply(tree.root(), applied.app, ViewId::ZERO, applied.branches)
+            .unwrap();
+        let kids: Vec<_> = tree.step(step).children().into_iter().collect();
+        let g = tree.sequent(kids[0]).clone();
+        let mut b = Bindings::new(&close);
+        let mut m = None;
+        let _ = match_sequent(&f.pool, &close, &g, &mut b, &mut |x| {
+            m = Some(x.clone());
+            ControlFlow::Break(())
+        });
+        let applied = apply_rule(
+            &mut f.pool,
+            &close,
+            2,
+            &g,
+            None,
+            &m.unwrap(),
+            SortCheck::Enforce,
+        )
+        .unwrap();
+        assert!(applied.branches.is_empty());
+        assert_eq!(&*applied.app.assumes, &[pos(Side::Succedent, 0, &[])]);
+        tree.apply(kids[0], applied.app, ViewId::ZERO, applied.branches)
+            .unwrap();
+        assert!(tree.is_closed(kids[0]) && !tree.is_proof_closed());
+        assert_eq!(tree.open_goals(), &[kids[1]]);
+    }
+
+    #[test]
+    fn assumes_add_and_inferred_generics() {
+        let mut f = fx();
+        let (three, zero, negone) = (f.c(f.three), f.c(f.zero), f.c(f.one_int));
+        // \assumes(le(a, b) ==>) \find(a) \replacewith(ifThenElse(le(b, a), b, a)) \add(le(b, a) ==>)
+        let int = f.sort(f.int);
+        let mut r = rb(&mut f, "demo");
+        let a = r.declare_sv(f.names.intern("a"), SvKind::Term, SortReq::Sub(int));
+        let b = r.declare_sv(f.names.intern("b"), SvKind::Term, SortReq::Sub(int));
+        let (pa, pb) = (r.sv(a).unwrap(), r.sv(b).unwrap());
+        let le = r.app(f.le, &[], &[], &[pa, pb]).unwrap();
+        r.assume(Side::Antecedent, le);
+        r.find_term(pa);
+        let (ta, tb) = (r.tmpl_sv(a).unwrap(), r.tmpl_sv(b).unwrap());
+        let cond = r.tmpl_app(f.le, &[], &[], &[tb, ta]).unwrap();
+        let ite = r
+            .tmpl_app(f.ite, &[GenTmpl::Infer], &[], &[cond, tb, ta])
+            .unwrap();
+        let mut g = GoalTemplate::new(Replace::Term(ite));
+        g.add_ante.push(cond);
+        r.goal(g);
+        let rule = r.finish().unwrap();
+        let hyp = f.pool.mk_inferred(f.le, &[], &[three, negone]).unwrap();
+        let goal = f.pool.mk_inferred(f.le, &[], &[three, zero]).unwrap();
+        let seq = Sequent::new()
+            .add(&f.pool, Side::Antecedent, hyp)
+            .unwrap()
+            .sequent
+            .add(&f.pool, Side::Succedent, goal)
+            .unwrap()
+            .sequent;
+        let at = pos(Side::Succedent, 0, &[0]); // the `three` in le(three, zero)
+        let m = first_match(&f, &rule, &seq, &at).expect("matches");
+        assert_eq!(m.matched(), &[(Side::Antecedent, 0)]);
+        let applied = apply_rule(
+            &mut f.pool,
+            &rule,
+            0,
+            &seq,
+            Some(&at),
+            &m,
+            SortCheck::Enforce,
+        )
+        .unwrap();
+        let s = &applied.branches[0].sequent;
+        let cond = f.pool.mk_inferred(f.le, &[], &[negone, three]).unwrap();
+        let ite = f
+            .pool
+            .mk_inferred(f.ite, &[], &[cond, negone, three])
+            .unwrap();
+        let rewritten = f.pool.mk_inferred(f.le, &[], &[ite, zero]).unwrap();
+        assert_eq!(s.succedent().as_slice(), &[rewritten]);
+        assert_eq!(s.antecedent().as_slice(), &[hyp, cond]);
+        assert_eq!(&*applied.app.assumes, &[pos(Side::Antecedent, 0, &[])]);
+    }
+
+    #[test]
+    fn builder_rejects_inconsistent_rules() {
+        let mut f = fx();
+        let mut r = rb(&mut f, "bad");
+        let x = r.declare_sv(f.names.intern("x"), SvKind::Formula, SortReq::Any);
+        let y = r.declare_sv(f.names.intern("y"), SvKind::Formula, SortReq::Any);
+        let px = r.sv(x).unwrap();
+        r.find_term(px);
+        let ty = r.tmpl_sv(y).unwrap();
+        r.goal(GoalTemplate::new(Replace::Term(ty)));
+        assert!(matches!(
+            r.finish(),
+            Err(PatternError::UnboundInTemplate(_))
+        ));
+        let mut r = rb(&mut f, "bad2");
+        let x = r.declare_sv(f.names.intern("x"), SvKind::Formula, SortReq::Any);
+        let px = r.sv(x).unwrap();
+        r.find_term(px);
+        r.goal(GoalTemplate::new(Replace::Sequent {
+            ante: vec![],
+            succ: vec![],
+        }));
+        assert!(matches!(r.finish(), Err(PatternError::BadReplace)));
     }
 }

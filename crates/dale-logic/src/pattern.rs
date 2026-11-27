@@ -102,6 +102,72 @@ pub struct Assumes {
     pub pat: PatId,
 }
 
+/// A node of a rule's template arena: what the rule builds from a match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TmplId(pub u32);
+
+/// A generic argument of an operator in a template.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GenTmpl {
+    Exact(GenArg),
+    /// The generic argument bound to this slot by the patterns.
+    Slot(u32),
+    /// Inferred from the arguments (as [`TermPool::mk_inferred`](crate::TermPool::mk_inferred)).
+    /// Either all or none of the generic arguments of an operator are inferred.
+    Infer,
+}
+
+#[derive(Clone, Debug)]
+pub enum TmplNode {
+    /// What the schema variable matched. A schema variable that ends up under a different number
+    /// of binders than where it matched is shifted accordingly (see [`crate::apply_rule`]).
+    Sv(SvId),
+    Ground(TermIdx),
+    App {
+        decl: OpDeclId,
+        gens: Box<[GenTmpl]>,
+        meta: Box<[MetaValue]>,
+        args: Box<[TmplId]>,
+        bind_arg: Option<u32>,
+    },
+}
+
+/// What a goal template does with the found formula or term.
+#[derive(Clone, Debug)]
+pub enum Replace {
+    /// Keep it (only `\add`).
+    Nothing,
+    /// For a [`Find::Term`]: the new term at the position of the found one.
+    Term(TmplId),
+    /// For a [`Find::Sequent`]: the formulas that replace the found formula of the antecedent /
+    /// succedent. A side that has no find part must have no formulas.
+    Sequent {
+        ante: Vec<TmplId>,
+        succ: Vec<TmplId>,
+    },
+}
+
+/// One goal template of a rule: the rule application yields one new goal per template.
+#[derive(Clone, Debug)]
+pub struct GoalTemplate {
+    pub label: Option<Symbol>,
+    pub replace: Replace,
+    /// Formulas added to the antecedent / succedent (`\add`); they must be closed.
+    pub add_ante: Vec<TmplId>,
+    pub add_succ: Vec<TmplId>,
+}
+
+impl GoalTemplate {
+    pub fn new(replace: Replace) -> Self {
+        Self {
+            label: None,
+            replace,
+            add_ante: Vec::new(),
+            add_succ: Vec::new(),
+        }
+    }
+}
+
 /// Conditions that are checked after the patterns matched.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
@@ -121,6 +187,8 @@ pub struct Rule {
     pub(crate) find: Find,
     pub(crate) assumes: Vec<Assumes>,
     pub(crate) conds: Vec<Cond>,
+    pub(crate) tmpls: Vec<TmplNode>,
+    pub(crate) goals: Vec<GoalTemplate>,
 }
 
 impl Rule {
@@ -141,6 +209,13 @@ impl Rule {
     }
     pub fn conds(&self) -> &[Cond] {
         &self.conds
+    }
+    /// The goal templates; none means that applying the rule closes the goal.
+    pub fn goals(&self) -> &[GoalTemplate] {
+        &self.goals
+    }
+    pub fn tmpl(&self, id: TmplId) -> &TmplNode {
+        &self.tmpls[id.0 as usize]
     }
     pub fn node(&self, id: PatId) -> &PatNode {
         &self.nodes[id.0 as usize]
@@ -169,6 +244,14 @@ pub enum PatternError {
     EmptyFind,
     /// The rule has no `\find`.
     NoFind,
+    UnknownTemplate(TmplId),
+    /// A template mentions a schema variable that occurs in no pattern.
+    UnboundInTemplate(SvId),
+    /// `Replace::Term` for a sequent find, `Replace::Sequent` for a term find, or formulas for a
+    /// side without find part.
+    BadReplace,
+    /// Some but not all generic arguments of a template operator are inferred.
+    MixedInfer,
 }
 
 /// Builds a [`Rule`], checking each node against the signature.
@@ -181,6 +264,8 @@ pub struct RuleBuilder {
     find: Option<Find>,
     assumes: Vec<Assumes>,
     conds: Vec<Cond>,
+    tmpls: Vec<TmplNode>,
+    goals: Vec<GoalTemplate>,
 }
 
 impl RuleBuilder {
@@ -194,6 +279,8 @@ impl RuleBuilder {
             find: None,
             assumes: Vec::new(),
             conds: Vec::new(),
+            tmpls: Vec::new(),
+            goals: Vec::new(),
         }
     }
 
@@ -281,6 +368,74 @@ impl RuleBuilder {
         self.conds.push(c);
     }
 
+    /// A template node for what a schema variable matched.
+    pub fn tmpl_sv(&mut self, sv: SvId) -> Result<TmplId, PatternError> {
+        if sv.0 as usize >= self.svs.len() {
+            return Err(PatternError::UnknownSv(sv));
+        }
+        Ok(self.push_tmpl(TmplNode::Sv(sv)))
+    }
+
+    pub fn tmpl_ground(&mut self, t: TermIdx) -> TmplId {
+        self.push_tmpl(TmplNode::Ground(t))
+    }
+
+    /// An operator application in a template.
+    pub fn tmpl_app(
+        &mut self,
+        decl: OpDeclId,
+        gens: &[GenTmpl],
+        meta: &[MetaValue],
+        args: &[TmplId],
+    ) -> Result<TmplId, PatternError> {
+        let d = self.sig.op_decl(decl);
+        if d.generics.len() != gens.len() {
+            return Err(PatternError::GenCount {
+                expected: d.generics.len(),
+                found: gens.len(),
+            });
+        }
+        if d.meta.len() != meta.len() {
+            return Err(PatternError::MetaCount {
+                expected: d.meta.len(),
+                found: meta.len(),
+            });
+        }
+        if d.args.len() != args.len() {
+            return Err(PatternError::ArgCount {
+                expected: d.args.len(),
+                found: args.len(),
+            });
+        }
+        let infer = gens.iter().filter(|g| matches!(g, GenTmpl::Infer)).count();
+        if infer != 0 && infer != gens.len() {
+            return Err(PatternError::MixedInfer);
+        }
+        for a in args {
+            if a.0 as usize >= self.tmpls.len() {
+                return Err(PatternError::UnknownTemplate(*a));
+            }
+        }
+        for g in gens {
+            if let GenTmpl::Slot(i) = g {
+                self.slots = self.slots.max(i + 1);
+            }
+        }
+        let bind_arg = d.bind.as_ref().map(|b| b.arg);
+        Ok(self.push_tmpl(TmplNode::App {
+            decl,
+            gens: gens.into(),
+            meta: meta.into(),
+            args: args.into(),
+            bind_arg,
+        }))
+    }
+
+    /// Adds a goal template. A rule without any closes the goal it is applied to.
+    pub fn goal(&mut self, g: GoalTemplate) {
+        self.goals.push(g);
+    }
+
     pub fn finish(self) -> Result<Rule, PatternError> {
         let find = self.find.ok_or(PatternError::NoFind)?;
         if let Find::Sequent {
@@ -303,7 +458,46 @@ impl RuleBuilder {
                 _ => return Err(PatternError::UnboundInCond(*sv)),
             }
         }
+        // templates: only known schema variables that the patterns bind; consistent replacement
+        let n_tmpl = self.tmpls.len() as u32;
+        for n in &self.tmpls {
+            if let TmplNode::Sv(s) = n
+                && !seen[s.0 as usize]
+            {
+                return Err(PatternError::UnboundInTemplate(*s));
+            }
+        }
+        let (has_ante, has_succ) = match find {
+            Find::Term(_) => (false, false),
+            Find::Sequent { ante, succ } => (ante.is_some(), succ.is_some()),
+        };
+        for g in &self.goals {
+            let all = g.add_ante.iter().chain(&g.add_succ);
+            let all: Vec<_> = match &g.replace {
+                Replace::Nothing => all.copied().collect(),
+                Replace::Term(t) => {
+                    if !matches!(find, Find::Term(_)) {
+                        return Err(PatternError::BadReplace);
+                    }
+                    all.copied().chain([*t]).collect()
+                }
+                Replace::Sequent { ante, succ } => {
+                    if matches!(find, Find::Term(_))
+                        || (!has_ante && !ante.is_empty())
+                        || (!has_succ && !succ.is_empty())
+                    {
+                        return Err(PatternError::BadReplace);
+                    }
+                    all.chain(ante).chain(succ).copied().collect()
+                }
+            };
+            if let Some(t) = all.iter().find(|t| t.0 >= n_tmpl) {
+                return Err(PatternError::UnknownTemplate(*t));
+            }
+        }
         Ok(Rule {
+            tmpls: self.tmpls,
+            goals: self.goals,
             name: self.name,
             svs: self.svs,
             slots: self.slots,
@@ -312,6 +506,11 @@ impl RuleBuilder {
             assumes: self.assumes,
             conds: self.conds,
         })
+    }
+
+    fn push_tmpl(&mut self, n: TmplNode) -> TmplId {
+        self.tmpls.push(n);
+        TmplId(self.tmpls.len() as u32 - 1)
     }
 
     fn push(&mut self, n: PatNode) -> PatId {

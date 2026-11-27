@@ -31,13 +31,16 @@ enum Undo {
 }
 
 /// The instantiation found by a match.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Bindings {
     /// For each schema variable: the matched term and the number of pattern binders above the
     /// place where it was first matched.
     svs: Vec<Option<(TermIdx, u32)>>,
     slots: Vec<Option<GenArg>>,
     trail: Vec<Undo>,
+    /// The sequent formulas matched so far: the `\find` parts first, then the `\assumes`
+    /// formulas, as (side, index in the semisequent).
+    matched: Vec<(Side, u32)>,
 }
 
 impl Bindings {
@@ -54,11 +57,25 @@ impl Bindings {
         self.slots.clear();
         self.slots.resize(rule.num_slots(), None);
         self.trail.clear();
+        self.matched.clear();
     }
 
     /// What the schema variable matched.
     pub fn get(&self, sv: SvId) -> Option<TermIdx> {
         self.svs[sv.0 as usize].map(|(t, _)| t)
+    }
+
+    /// What the schema variable matched and the number of pattern binders above the place where
+    /// it matched first.
+    pub fn get_at_depth(&self, sv: SvId) -> Option<(TermIdx, u32)> {
+        self.svs[sv.0 as usize]
+    }
+
+    /// The sequent formulas the match used, as (side, index in the semisequent): first the formulas
+    /// of a sequent `\find` (antecedent before succedent), then those of the `\assumes` patterns
+    /// in order. Complete when the match callback is called.
+    pub fn matched(&self) -> &[(Side, u32)] {
+        &self.matched
     }
 
     /// The generic argument bound to slot `i`.
@@ -260,12 +277,17 @@ impl Ctx<'_> {
                 ControlFlow::Continue(())
             };
         };
-        for &f in self.seq.semisequent(side).as_slice() {
+        for (i, &f) in self.seq.semisequent(side).as_slice().iter().enumerate() {
             let mark = b.mark();
-            if self.m(b, pat, f, 0) {
-                self.steps(b, rest_find, rest_assumes, k)?;
-            }
+            b.matched.push((side, i as u32));
+            let r = if self.m(b, pat, f, 0) {
+                self.steps(b, rest_find, rest_assumes, k)
+            } else {
+                ControlFlow::Continue(())
+            };
+            b.matched.pop();
             b.undo(mark);
+            r?;
         }
         ControlFlow::Continue(())
     }
