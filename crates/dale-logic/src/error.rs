@@ -47,6 +47,8 @@ pub enum LogicError {
     NoBoundVarOp,
     /// A position that does not exist in the term.
     BadPosition,
+    /// `lower` was asked to move a term whose variable with this index would drop below 0.
+    CannotLower(u64),
     /// `instantiate` was called on a term whose operator binds no variable.
     NotABinder,
 }

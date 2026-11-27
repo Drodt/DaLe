@@ -123,6 +123,11 @@ pub struct Term {
     /// The number of enclosing binders the term needs to be closed (0: closed).
     loose: u32,
     rigid: bool,
+    /// Bit `k` (`k < 63`): the variable with index `k` may occur free in the term. Bit 63 stands for
+    /// all indices `>= 63`. Exact for `k < 62`; above that, bits may be set conservatively (see
+    /// [`Term::may_have_free`]). Gives "does the term mention the innermost bound variable" with
+    /// one AND.
+    free_mask: u64,
 }
 
 impl Term {
@@ -146,6 +151,24 @@ impl Term {
     #[inline]
     pub fn is_closed(&self) -> bool {
         self.loose == 0
+    }
+    /// The raw free-variable mask; see [`Term::may_have_free`].
+    #[inline]
+    pub fn free_mask(&self) -> u64 {
+        self.free_mask
+    }
+    /// Whether the variable with de Bruijn index `k` (relative to the term's own context) may occur
+    /// free. `false` is definite. `true` is exact for `k < 62`; for larger `k` it may be a false
+    /// positive.
+    #[inline]
+    pub fn may_have_free(&self, k: u32) -> bool {
+        self.free_mask >> k.min(63) & 1 != 0
+    }
+    /// Whether any of the variables `0..n` may occur free.
+    #[inline]
+    pub fn may_have_free_below(&self, n: u32) -> bool {
+        let m = if n >= 63 { self.free_mask } else { self.free_mask & ((1u64 << n) - 1) };
+        m != 0
     }
     /// Operator and all subterms rigid (independent of the program state).
     #[inline]
@@ -566,13 +589,23 @@ impl TermPool {
             None => 0,
         };
         let mut rigid = od.flags.rigid;
+        let mut free_mask = match od.var_index {
+            Some(n) => 1u64 << n.min(63),
+            None => 0,
+        };
         for (i, a) in args.iter().enumerate() {
             let t = &self.terms[a.index()];
-            let l = match od.bind {
-                Some((b, _)) if b as usize == i => t.loose.saturating_sub(1),
-                _ => t.loose,
+            let (l, m) = match od.bind {
+                // the variable bound here disappears, the others move one index down; the "63 and
+                // above" bit stays set
+                Some((b, _)) if b as usize == i => (
+                    t.loose.saturating_sub(1),
+                    (t.free_mask >> 1) | (t.free_mask & (1 << 63)),
+                ),
+                _ => (t.loose, t.free_mask),
             };
             loose = loose.max(l);
+            free_mask |= m;
             rigid &= t.rigid;
         }
         let sort = od.result;
@@ -586,6 +619,7 @@ impl TermPool {
             args_len: args.len() as u32,
             loose,
             rigid,
+            free_mask,
         });
         let (terms, all_args) = (&self.terms, &self.args);
         self.term_table.insert(h, idx, |i| {

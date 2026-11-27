@@ -56,6 +56,62 @@ impl TermPool {
         Ok(r)
     }
 
+    /// Subtracts `amount` from the index of every free variable of `t`: the inverse of
+    /// [`lift`](Self::lift), for terms that do not use the `amount` innermost variables (e.g. when
+    /// the binder around them is removed). Fails with [`LogicError::CannotLower`] if one of them
+    /// occurs.
+    pub fn lower(&mut self, t: TermIdx, amount: u32) -> Result<TermIdx, LogicError> {
+        if amount == 0 || self[t].is_closed() {
+            return Ok(t);
+        }
+        if self[t].may_have_free_below(amount) {
+            // the mask is conservative for large indices, the traversal below decides
+            if amount <= 62 {
+                let n = self[t].free_mask().trailing_zeros() as u64;
+                return Err(LogicError::CannotLower(n));
+            }
+        }
+        self.lower_rec(t, amount, 0, &mut Cache::new())
+    }
+
+    fn lower_rec(
+        &mut self,
+        t: TermIdx,
+        amount: u32,
+        cutoff: u32,
+        cache: &mut Cache,
+    ) -> Result<TermIdx, LogicError> {
+        let term = self[t];
+        if term.loose() <= cutoff {
+            return Ok(t);
+        }
+        if let Some(&r) = cache.get(&(t, cutoff)) {
+            return Ok(r);
+        }
+        let od = &self[term.op()];
+        let (var_index, bind) = (od.var_index(), od.bind());
+        let r = if let Some(n) = var_index {
+            // n >= cutoff here
+            if n < (cutoff + amount) as u64 {
+                return Err(LogicError::CannotLower(n - cutoff as u64));
+            }
+            self.mk_var(term.sort(), n - amount as u64)?
+        } else {
+            let old = self.subs_of(t).to_vec();
+            let mut new = Vec::with_capacity(old.len());
+            for (i, a) in old.into_iter().enumerate() {
+                let c = match bind {
+                    Some((b, _)) if b as usize == i => cutoff + 1,
+                    _ => cutoff,
+                };
+                new.push(self.lower_rec(a, amount, c, cache)?);
+            }
+            self.mk_unchecked(term.op(), &new)
+        };
+        cache.insert((t, cutoff), r);
+        Ok(r)
+    }
+
     /// For a binder term `Q(.., body, ..)`, the body with the bound variable replaced by `repl`
     /// (whose sort must be a subsort of the variable's sort). Variables of `repl` that are free
     /// refer to the binders around `binder`.

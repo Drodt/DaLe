@@ -649,3 +649,295 @@ mod sequents {
         assert_eq!(c.sequent.antecedent().as_slice(), &[pp]);
     }
 }
+
+mod matching {
+    use std::ops::ControlFlow;
+
+    use super::*;
+
+    fn rb(f: &mut Fx, name: &str) -> RuleBuilder {
+        RuleBuilder::new(f.pool.signature().clone(), f.names.intern(name))
+    }
+
+    /// All matches of `rule` at `t`, as the terms bound to `svs`.
+    fn matches(
+        f: &Fx,
+        rule: &Rule,
+        seq: &Sequent,
+        t: TermIdx,
+        svs: &[SvId],
+    ) -> Vec<Vec<TermIdx>> {
+        let mut b = Bindings::new(rule);
+        let mut out = Vec::new();
+        let _ = match_term(&f.pool, rule, seq, t, &mut b, &mut |b| {
+            out.push(svs.iter().map(|s| b.get(*s).unwrap()).collect());
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    #[test]
+    fn repeated_schema_variable() {
+        let mut f = fx();
+        let mut r = rb(&mut f, "eq_and");
+        let phi = r.declare_sv(f.names.intern("phi"), SvKind::Formula, SortReq::Any);
+        let pv = r.sv(phi).unwrap();
+        let and = r.app(f.and, &[], &[], &[pv, pv]).unwrap();
+        r.find_term(and);
+        let rule = r.finish().unwrap();
+        let p = f.c(f.p);
+        let (c3, c0) = (f.c(f.three), f.c(f.zero));
+        let q = f.pool.mk_inferred(f.le, &[], &[c3, c0]).unwrap();
+        let (pp, pq) = (f.and(p, p), f.and(p, q));
+        let big = f.and(pq, pq);
+        let s = Sequent::new();
+        assert_eq!(matches(&f, &rule, &s, pp, &[phi]), vec![vec![p]]);
+        assert!(matches(&f, &rule, &s, pq, &[phi]).is_empty());
+        assert_eq!(matches(&f, &rule, &s, big, &[phi]), vec![vec![pq]]);
+        // not an `and` at all
+        assert!(matches(&f, &rule, &s, p, &[phi]).is_empty());
+    }
+
+    #[test]
+    fn sort_requirements_and_slots() {
+        let mut f = fx();
+        let nat = f.sort(f.nat);
+        let mut r = rb(&mut f, "le_nat");
+        let x = r.declare_sv(f.names.intern("x"), SvKind::Term, SortReq::Sub(nat));
+        let y = r.declare_sv(f.names.intern("y"), SvKind::Term, SortReq::Any);
+        let (px, py) = (r.sv(x).unwrap(), r.sv(y).unwrap());
+        let le = r.app(f.le, &[], &[], &[px, py]).unwrap();
+        r.find_term(le);
+        let rule = r.finish().unwrap();
+        let (z, three) = (f.c(f.zero), f.c(f.three));
+        let ok = f.pool.mk_inferred(f.le, &[], &[z, three]).unwrap();
+        let bad = f.pool.mk_inferred(f.le, &[], &[three, z]).unwrap();
+        let s = Sequent::new();
+        assert_eq!(matches(&f, &rule, &s, ok, &[x, y]), vec![vec![z, three]]);
+        assert!(matches(&f, &rule, &s, bad, &[x, y]).is_empty());
+
+        // ifThenElse<S>(c, a, a) with the sort of `a` tied to the generic slot S
+        let mut r = rb(&mut f, "ite_same");
+        let c = r.declare_sv(f.names.intern("c"), SvKind::Formula, SortReq::Any);
+        let a = r.declare_sv(f.names.intern("a"), SvKind::Term, SortReq::Slot(0));
+        let (pc, pa) = (r.sv(c).unwrap(), r.sv(a).unwrap());
+        let ite = r
+            .app(f.ite, &[GenPat::Slot(0)], &[], &[pc, pa, pa])
+            .unwrap();
+        r.find_term(ite);
+        let rule = r.finish().unwrap();
+        let p = f.c(f.p);
+        let t = f.pool.mk_inferred(f.ite, &[], &[p, three, three]).unwrap();
+        let u = f.pool.mk_inferred(f.ite, &[], &[p, three, z]).unwrap();
+        let mut b = Bindings::new(&rule);
+        let s = Sequent::new();
+        let mut hits = 0;
+        let int = f.sort(f.int);
+        let _ = match_term(&f.pool, &rule, &s, t, &mut b, &mut |b| {
+            hits += 1;
+            assert_eq!(b.slot(0), Some(GenArg::Sort(int)));
+            ControlFlow::Continue(())
+        });
+        assert_eq!(hits, 1);
+        // bindings are restored: the next match starts clean
+        assert!(b.slot(0).is_none() && b.get(a).is_none());
+        assert!(matches(&f, &rule, &s, u, &[a]).is_empty());
+    }
+
+    #[test]
+    fn no_free_var_and_lower() {
+        let mut f = fx();
+        let int = f.sort(f.int);
+        // \all(phi) with \noFreeVar(phi, 0)
+        let mut r = rb(&mut f, "all_unused");
+        let phi = r.declare_sv(f.names.intern("phi"), SvKind::Formula, SortReq::Any);
+        let pv = r.sv(phi).unwrap();
+        let all = r.app(f.all, &[GenPat::Slot(0)], &[], &[pv]).unwrap();
+        r.find_term(all);
+        r.cond(Cond::NoFreeVar { sv: phi, index: 0 });
+        let rule = r.finish().unwrap();
+        let s = Sequent::new();
+        let (p, three) = (f.c(f.p), f.c(f.three));
+        let v0 = f.var(int, 0);
+        let v1 = f.var(int, 1);
+        // body mentions the bound variable: no match
+        let uses = f.pool.mk_inferred(f.le, &[], &[v0, three]).unwrap();
+        let t_uses = f.all(int, uses).unwrap();
+        assert!(matches(&f, &rule, &s, t_uses, &[phi]).is_empty());
+        // body only mentions the next variable out: matches, and lowering gives the new body
+        let outer = f.pool.mk_inferred(f.le, &[], &[v1, three]).unwrap();
+        let t_outer = f.all(int, outer).unwrap();
+        let m = matches(&f, &rule, &s, t_outer, &[phi]);
+        assert_eq!(m, vec![vec![outer]]);
+        let lowered = f.pool.lower(outer, 1).unwrap();
+        let expect = f.pool.mk_inferred(f.le, &[], &[v0, three]).unwrap();
+        assert_eq!(lowered, expect);
+        // closed body
+        let t_closed = f.all(int, p).unwrap();
+        assert_eq!(matches(&f, &rule, &s, t_closed, &[phi]), vec![vec![p]]);
+        // lowering a term that uses the variable fails, lowering is the inverse of lifting
+        assert_eq!(f.pool.lower(uses, 1), Err(LogicError::CannotLower(0)));
+        let up = f.pool.lift(expect, 2).unwrap();
+        assert_eq!(f.pool.lower(up, 2).unwrap(), expect);
+        assert!(f.pool[uses].may_have_free(0) && !f.pool[uses].may_have_free(1));
+        assert!(!f.pool[outer].may_have_free(0) && f.pool[outer].may_have_free(1));
+        assert!(!f.pool[t_outer].may_have_free(1) && f.pool[t_outer].may_have_free(0));
+    }
+
+    #[test]
+    fn different_binder_depths() {
+        let mut f = fx();
+        let int = f.sort(f.int);
+        // and(phi, all<S>(phi)): phi at depth 0 and depth 1
+        let mut r = rb(&mut f, "depths");
+        let phi = r.declare_sv(f.names.intern("phi"), SvKind::Formula, SortReq::Any);
+        let pv = r.sv(phi).unwrap();
+        let all = r.app(f.all, &[GenPat::Slot(0)], &[], &[pv]).unwrap();
+        let and = r.app(f.and, &[], &[], &[pv, all]).unwrap();
+        r.find_term(and);
+        let rule = r.finish().unwrap();
+        let s = Sequent::new();
+        let (p, three) = (f.c(f.p), f.c(f.three));
+        let t = {
+            let a = f.all(int, p).unwrap();
+            f.and(p, a)
+        };
+        assert_eq!(matches(&f, &rule, &s, t, &[phi]), vec![vec![p]]);
+        // a term with a free outer variable must be lifted when it moves under the binder
+        let (v0, v1) = (f.var(int, 0), f.var(int, 1));
+        let q = f.pool.mk_inferred(f.le, &[], &[v0, three]).unwrap();
+        let q_lifted = f.pool.mk_inferred(f.le, &[], &[v1, three]).unwrap();
+        let (aq, aql) = (f.all(int, q_lifted).unwrap(), f.all(int, q).unwrap());
+        let good = f.and(q, aq);
+        let bad = f.and(q, aql);
+        assert_eq!(matches(&f, &rule, &s, good, &[phi]), vec![vec![q]]);
+        assert!(matches(&f, &rule, &s, bad, &[phi]).is_empty());
+    }
+
+    #[test]
+    fn assumes_backtracking_and_sequent_find() {
+        let mut f = fx();
+        let (z, three, neg) = (f.c(f.zero), f.c(f.three), f.c(f.one_int));
+        // \assumes(le(a, b) ==>) \find(a): a is a bare term variable (sort int or below)
+        let int = f.sort(f.int);
+        let mut r = rb(&mut f, "apply_le");
+        let a = r.declare_sv(f.names.intern("a"), SvKind::Term, SortReq::Sub(int));
+        let b = r.declare_sv(f.names.intern("b"), SvKind::Term, SortReq::Any);
+        let (pa, pb) = (r.sv(a).unwrap(), r.sv(b).unwrap());
+        let le = r.app(f.le, &[], &[], &[pa, pb]).unwrap();
+        r.assume(Side::Antecedent, le);
+        r.find_term(pa);
+        let rule = r.finish().unwrap();
+        let l1 = f.pool.mk_inferred(f.le, &[], &[three, z]).unwrap();
+        let l2 = f.pool.mk_inferred(f.le, &[], &[three, neg]).unwrap();
+        let l3 = f.pool.mk_inferred(f.le, &[], &[z, neg]).unwrap();
+        let seq = Sequent::new()
+            .add_all(&f.pool, Side::Antecedent, &[l1, l2, l3])
+            .unwrap()
+            .sequent;
+        // at `three`: two assumes candidates, enumerated in sequent order
+        assert_eq!(
+            matches(&f, &rule, &seq, three, &[a, b]),
+            vec![vec![three, z], vec![three, neg]]
+        );
+        // at `zero`: only l3
+        assert_eq!(matches(&f, &rule, &seq, z, &[a, b]), vec![vec![z, neg]]);
+        // no assumes candidate for `negone`
+        assert!(matches(&f, &rule, &seq, neg, &[a, b]).is_empty());
+        // `Break` stops the search
+        let mut bnd = Bindings::new(&rule);
+        let mut n = 0;
+        let r = match_term(&f.pool, &rule, &seq, three, &mut bnd, &mut |_| {
+            n += 1;
+            ControlFlow::Break(())
+        });
+        assert!(r.is_break() && n == 1);
+
+        // one formula may match two assumes patterns: and(x, y) on the antecedent twice
+        let mut r = rb(&mut f, "twice");
+        let x = r.declare_sv(f.names.intern("x"), SvKind::Formula, SortReq::Any);
+        let y = r.declare_sv(f.names.intern("y"), SvKind::Formula, SortReq::Any);
+        let (px, py) = (r.sv(x).unwrap(), r.sv(y).unwrap());
+        let both = r.app(f.and, &[], &[], &[px, py]).unwrap();
+        r.find_sequent(Some(both), None);
+        r.assume(Side::Antecedent, both);
+        let rule = r.finish().unwrap();
+        let p = f.c(f.p);
+        let pp = f.and(p, p);
+        let seq = Sequent::new()
+            .add(&f.pool, Side::Antecedent, pp)
+            .unwrap()
+            .sequent;
+        let mut bnd = Bindings::new(&rule);
+        let mut n = 0;
+        let _ = match_sequent(&f.pool, &rule, &seq, &mut bnd, &mut |_| {
+            n += 1;
+            ControlFlow::Continue(())
+        });
+        // the repeated schema variables x, y must agree: and(p, p) matches itself
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn index_candidates() {
+        let mut f = fx();
+        let int = f.sort(f.int);
+        let mut rules = Vec::new();
+        // 0: all<S>(phi)
+        let mut r = rb(&mut f, "all_any");
+        let phi = r.declare_sv(f.names.intern("phi"), SvKind::Formula, SortReq::Any);
+        let pv = r.sv(phi).unwrap();
+        let all = r.app(f.all, &[GenPat::Slot(0)], &[], &[pv]).unwrap();
+        r.find_term(all);
+        rules.push(r.finish().unwrap());
+        // 1: all<S>(and(x, y))
+        let mut r = rb(&mut f, "all_and");
+        let x = r.declare_sv(f.names.intern("x"), SvKind::Formula, SortReq::Any);
+        let y = r.declare_sv(f.names.intern("y"), SvKind::Formula, SortReq::Any);
+        let (px, py) = (r.sv(x).unwrap(), r.sv(y).unwrap());
+        let and = r.app(f.and, &[], &[], &[px, py]).unwrap();
+        let all = r.app(f.all, &[GenPat::Slot(0)], &[], &[and]).unwrap();
+        r.find_term(all);
+        rules.push(r.finish().unwrap());
+        // 2: any formula
+        let mut r = rb(&mut f, "any_formula");
+        let phi = r.declare_sv(f.names.intern("phi"), SvKind::Formula, SortReq::Any);
+        let pv = r.sv(phi).unwrap();
+        r.find_term(pv);
+        rules.push(r.finish().unwrap());
+        // 3: any term of sort int or below
+        let mut r = rb(&mut f, "any_int");
+        let t = r.declare_sv(f.names.intern("t"), SvKind::Term, SortReq::Sub(int));
+        let pv = r.sv(t).unwrap();
+        r.find_term(pv);
+        rules.push(r.finish().unwrap());
+        // 4: le(x, y)
+        let mut r = rb(&mut f, "le");
+        let x = r.declare_sv(f.names.intern("x"), SvKind::Term, SortReq::Any);
+        let y = r.declare_sv(f.names.intern("y"), SvKind::Term, SortReq::Any);
+        let (px, py) = (r.sv(x).unwrap(), r.sv(y).unwrap());
+        let le = r.app(f.le, &[], &[], &[px, py]).unwrap();
+        r.find_term(le);
+        rules.push(r.finish().unwrap());
+
+        let ix = RuleIndex::build(&f.pool, &rules);
+        let (p, three) = (f.c(f.p), f.c(f.three));
+        let pp = f.and(p, p);
+        let le_t = f.pool.mk_inferred(f.le, &[], &[three, three]).unwrap();
+        let all_and = f.all(int, pp).unwrap();
+        let all_le = f.all(int, le_t).unwrap();
+        let mut out = Vec::new();
+        let mut cand = |t: TermIdx| {
+            ix.candidates(&f.pool, t, &mut out);
+            let mut v = out.clone();
+            v.sort();
+            v
+        };
+        assert_eq!(cand(all_and), vec![0, 1, 2]);
+        assert_eq!(cand(all_le), vec![0, 2]);
+        assert_eq!(cand(le_t), vec![2, 4]);
+        assert_eq!(cand(three), vec![3]);
+        assert_eq!(cand(p), vec![2]);
+        assert_eq!(ix.num_wild(), 2);
+    }
+}

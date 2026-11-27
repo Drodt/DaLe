@@ -10,9 +10,9 @@
 //! The crate knows nothing about a specific logic; only the roles of the `\top` and `\formula`
 //! sorts and the shape of the bound variable operator are fixed.
 //!
-//! TODO: schema variables only occur in rules. Decide between a separate pattern layer (rule
-//! patterns as their own structure that can be matched against pool terms) and schema variable
-//! operators/sorts inside the regular term structure.
+//! Rules have a separate pattern layer ([`Rule`], [`RuleBuilder`]) that is matched against pool
+//! terms and sequents ([`match_term`], [`match_sequent`]); a [`RuleIndex`] finds the rules that
+//! can match a term.
 //!
 //! TODO: the dale-syn side still has to report the sort of the variable an operator binds, mark
 //! the bound variable operator, and reject duplicate numbers in `{..}` (at most one variable).
@@ -21,6 +21,9 @@
 mod display;
 mod error;
 mod ids;
+mod index;
+mod matcher;
+mod pattern;
 mod pool;
 mod pos;
 mod sequent;
@@ -34,6 +37,12 @@ mod tests;
 pub use display::Show;
 pub use error::LogicError;
 pub use ids::{OpDeclId, OpIdx, SortDeclId, SortIdx, TermIdx};
+pub use index::{RuleId, RuleIndex};
+pub use matcher::{Bindings, match_sequent, match_term};
+pub use pattern::{
+    Assumes, Cond, Find, GenPat, MetaPat, PatId, PatNode, PatternError, Rule, RuleBuilder,
+    SortReq, SvDecl, SvId, SvKind,
+};
 pub use pool::{Checkpoint, GenArg, OpData, SortData, Term, TermPool};
 pub use pos::{PosInOccurrence, PosInTerm, SortCheck};
 pub use sequent::{SemiChange, Semisequent, Sequent, SequentChange, SequentError, Side};
