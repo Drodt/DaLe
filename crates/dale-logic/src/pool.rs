@@ -167,7 +167,11 @@ impl Term {
     /// Whether any of the variables `0..n` may occur free.
     #[inline]
     pub fn may_have_free_below(&self, n: u32) -> bool {
-        let m = if n >= 63 { self.free_mask } else { self.free_mask & ((1u64 << n) - 1) };
+        let m = if n >= 63 {
+            self.free_mask
+        } else {
+            self.free_mask & ((1u64 << n) - 1)
+        };
         m != 0
     }
     /// Operator and all subterms rigid (independent of the program state).

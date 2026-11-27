@@ -82,6 +82,24 @@ impl Bindings {
     }
 }
 
+/// A snapshot of the instantiation of a rule: what each schema variable and generic slot matched.
+/// Kept in the proof tree for every rule application.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Instantiation {
+    pub svs: Box<[Option<TermIdx>]>,
+    pub slots: Box<[Option<GenArg>]>,
+}
+
+impl Bindings {
+    /// Copies the current bindings out.
+    pub fn instantiation(&self) -> Instantiation {
+        Instantiation {
+            svs: self.svs.iter().map(|x| x.map(|(t, _)| t)).collect(),
+            slots: self.slots.clone().into_boxed_slice(),
+        }
+    }
+}
+
 /// `s == lift(t, k)` for the free variables of `t` (those at or above `cutoff` while descending
 /// under binders), without building the lifted term.
 fn is_lifted(pool: &TermPool, s: TermIdx, t: TermIdx, k: u32, cutoff: u32) -> bool {

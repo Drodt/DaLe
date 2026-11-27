@@ -660,13 +660,7 @@ mod matching {
     }
 
     /// All matches of `rule` at `t`, as the terms bound to `svs`.
-    fn matches(
-        f: &Fx,
-        rule: &Rule,
-        seq: &Sequent,
-        t: TermIdx,
-        svs: &[SvId],
-    ) -> Vec<Vec<TermIdx>> {
+    fn matches(f: &Fx, rule: &Rule, seq: &Sequent, t: TermIdx, svs: &[SvId]) -> Vec<Vec<TermIdx>> {
         let mut b = Bindings::new(rule);
         let mut out = Vec::new();
         let _ = match_term(&f.pool, rule, seq, t, &mut b, &mut |b| {
@@ -939,5 +933,138 @@ mod matching {
         assert_eq!(cand(three), vec![3]);
         assert_eq!(cand(p), vec![2]);
         assert_eq!(ix.num_wild(), 2);
+    }
+}
+
+mod proof_tree {
+    use super::*;
+
+    fn app(rule: u32) -> Application {
+        Application {
+            rule,
+            find: None,
+            assumes: Box::new([]),
+            inst: Instantiation {
+                svs: Box::new([]),
+                slots: Box::new([]),
+            },
+        }
+    }
+
+    fn seq(f: &mut Fx, ante: &[TermIdx]) -> Sequent {
+        Sequent::new()
+            .add_all(&f.pool, Side::Antecedent, ante)
+            .unwrap()
+            .sequent
+    }
+
+    #[test]
+    fn grows_branches_and_closes() {
+        let mut f = fx();
+        let p = f.c(f.p);
+        let pp = f.and(p, p);
+        let root = seq(&mut f, &[pp]);
+        let left = seq(&mut f, &[p]);
+        let mut t = ProofTree::new(root.clone());
+        let r = t.root();
+        assert_eq!(t.open_goals(), &[r]);
+        assert!(!t.is_closed(r) && t.is_open_goal(r) && t.step_of(r).is_none());
+        assert!(t.children(r).is_empty());
+
+        // a rule with two goal templates branches
+        let name = f.names.intern("Use case");
+        let step = t
+            .apply(
+                r,
+                app(7),
+                vec![
+                    Branch {
+                        label: Some(name),
+                        sequent: left.clone(),
+                    },
+                    Branch::new(Sequent::new()),
+                ],
+            )
+            .unwrap();
+        assert!(!t.is_open_goal(r) && t.step(step).node() == r);
+        assert_eq!(t.step(step).application().rule, 7);
+        let kids: Vec<_> = t.children(r).into_iter().collect();
+        assert_eq!(kids.len(), 2);
+        let (a, b) = (kids[0], kids[1]);
+        assert_eq!(t.parent(a), Some(r));
+        assert_eq!(t.node(a).depth(), 1);
+        assert_eq!(t.node(a).created_by(), Some((step, 0)));
+        assert_eq!(t.node(b).created_by(), Some((step, 1)));
+        assert_eq!(t.node(a).label(), Some(name));
+        assert_eq!(t.sequent(a), &left);
+        assert_eq!(t.sequent(r), &root); // the parent stays as it was
+        let mut goals = t.open_goals().to_vec();
+        goals.sort();
+        assert_eq!(goals, vec![a, b]);
+
+        // a rule with one goal template does not branch
+        let c = {
+            let s = t
+                .apply(a, app(1), vec![Branch::new(Sequent::new())])
+                .unwrap();
+            t.step(s).children().first().unwrap()
+        };
+        assert_eq!(t.node(c).depth(), 2);
+        assert_eq!(t.ancestors(c).collect::<Vec<_>>(), vec![c, a, r]);
+        assert!(!t.is_closed(a) && !t.is_closed(c));
+
+        // closing the grandchild closes its parent, but not the root: b is still open
+        let s = t.apply(c, app(2), vec![]).unwrap();
+        assert!(t.step(s).closes());
+        assert!(t.is_closed(c) && t.is_closed(a) && !t.is_closed(r));
+        assert!(t.is_closed(c) && !t.is_open_goal(c));
+        assert_eq!(t.open_goals(), &[b]);
+        assert!(!t.is_proof_closed());
+        t.apply(b, app(2), vec![]).unwrap();
+        assert!(t.is_closed(b) && t.is_proof_closed());
+        assert!(t.open_goals().is_empty());
+        assert_eq!(t.num_nodes(), 4);
+        assert_eq!(t.num_steps(), 4);
+    }
+
+    #[test]
+    fn errors_and_trivial_proofs() {
+        let mut f = fx();
+        let mut t = ProofTree::new(Sequent::new());
+        let r = t.root();
+        // closing the root closes the proof
+        t.apply(r, app(0), vec![]).unwrap();
+        assert!(t.is_proof_closed());
+        assert_eq!(
+            t.apply(r, app(0), vec![]),
+            Err(ProofError::NotAnOpenGoal(r))
+        );
+        let bogus = NodeId::from_u32(5);
+        assert_eq!(
+            t.apply(bogus, app(0), vec![]),
+            Err(ProofError::UnknownNode(bogus))
+        );
+        // goals are swap-removed: the bookkeeping stays consistent
+        let p = f.c(f.p);
+        let s = seq(&mut f, &[p]);
+        let mut t = ProofTree::new(s.clone());
+        let step = t
+            .apply(
+                t.root(),
+                app(1),
+                (0..4).map(|_| Branch::new(s.clone())).collect(),
+            )
+            .unwrap();
+        let kids: Vec<_> = t.step(step).children().into_iter().collect();
+        t.apply(kids[1], app(2), vec![]).unwrap();
+        t.apply(kids[0], app(2), vec![]).unwrap();
+        let mut left = t.open_goals().to_vec();
+        left.sort();
+        assert_eq!(left, vec![kids[2], kids[3]]);
+        assert!(left.iter().all(|&g| t.is_open_goal(g)));
+        assert!(!t.is_closed(t.root()));
+        t.apply(kids[3], app(2), vec![]).unwrap();
+        t.apply(kids[2], app(2), vec![]).unwrap();
+        assert!(t.is_proof_closed());
     }
 }

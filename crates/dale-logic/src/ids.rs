@@ -41,3 +41,17 @@ newtype_index! {
     #[debug_format = "TermIdx({})"]
     pub struct TermIdx {}
 }
+
+newtype_index! {
+    /// A node of a [`ProofTree`](crate::ProofTree).
+    #[orderable]
+    #[debug_format = "NodeId({})"]
+    pub struct NodeId {}
+}
+
+newtype_index! {
+    /// A rule application of a [`ProofTree`](crate::ProofTree).
+    #[orderable]
+    #[debug_format = "StepId({})"]
+    pub struct StepId {}
+}

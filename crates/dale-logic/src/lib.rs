@@ -26,6 +26,7 @@ mod matcher;
 mod pattern;
 mod pool;
 mod pos;
+mod proof;
 mod sequent;
 mod sig;
 mod subst;
@@ -36,15 +37,16 @@ mod tests;
 
 pub use display::Show;
 pub use error::LogicError;
-pub use ids::{OpDeclId, OpIdx, SortDeclId, SortIdx, TermIdx};
+pub use ids::{NodeId, OpDeclId, OpIdx, SortDeclId, SortIdx, StepId, TermIdx};
 pub use index::{RuleId, RuleIndex};
-pub use matcher::{Bindings, match_sequent, match_term};
+pub use matcher::{Bindings, Instantiation, match_sequent, match_term};
 pub use pattern::{
-    Assumes, Cond, Find, GenPat, MetaPat, PatId, PatNode, PatternError, Rule, RuleBuilder,
-    SortReq, SvDecl, SvId, SvKind,
+    Assumes, Cond, Find, GenPat, MetaPat, PatId, PatNode, PatternError, Rule, RuleBuilder, SortReq,
+    SvDecl, SvId, SvKind,
 };
 pub use pool::{Checkpoint, GenArg, OpData, SortData, Term, TermPool};
 pub use pos::{PosInOccurrence, PosInTerm, SortCheck};
+pub use proof::{Application, Branch, Node, NodeRange, ProofError, ProofTree, Step};
 pub use sequent::{SemiChange, Semisequent, Sequent, SequentChange, SequentError, Side};
 pub use sig::{
     Binding, GenArgPat, GenKind, GenParam, MetaKind, MetaValue, OpDecl, OpFlags, OpKind, SigError,

@@ -149,9 +149,18 @@ impl Rule {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PatternError {
-    ArgCount { expected: usize, found: usize },
-    GenCount { expected: usize, found: usize },
-    MetaCount { expected: usize, found: usize },
+    ArgCount {
+        expected: usize,
+        found: usize,
+    },
+    GenCount {
+        expected: usize,
+        found: usize,
+    },
+    MetaCount {
+        expected: usize,
+        found: usize,
+    },
     UnknownSv(SvId),
     UnknownNode(PatId),
     /// A condition mentions a schema variable that occurs in no pattern.
