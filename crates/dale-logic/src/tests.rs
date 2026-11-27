@@ -414,7 +414,7 @@ fn rollback() {
     let int = f.sort(f.int);
     f.pool.mk_sort(f.seq, &[GenArg::Sort(int)]).unwrap();
     let _ = a;
-    f.pool.rollback(cp);
+    f.pool.rollback(cp).unwrap();
     assert_eq!(
         (f.pool.num_sorts(), f.pool.num_ops(), f.pool.num_terms()),
         (sorts, ops, terms)
@@ -977,6 +977,7 @@ mod proof_tree {
             .apply(
                 r,
                 app(7),
+                ViewId::ZERO,
                 vec![
                     Branch {
                         label: Some(name),
@@ -1005,7 +1006,7 @@ mod proof_tree {
         // a rule with one goal template does not branch
         let c = {
             let s = t
-                .apply(a, app(1), vec![Branch::new(Sequent::new())])
+                .apply(a, app(1), ViewId::ZERO, vec![Branch::new(Sequent::new())])
                 .unwrap();
             t.step(s).children().first().unwrap()
         };
@@ -1014,13 +1015,13 @@ mod proof_tree {
         assert!(!t.is_closed(a) && !t.is_closed(c));
 
         // closing the grandchild closes its parent, but not the root: b is still open
-        let s = t.apply(c, app(2), vec![]).unwrap();
+        let s = t.apply(c, app(2), ViewId::ZERO, vec![]).unwrap();
         assert!(t.step(s).closes());
         assert!(t.is_closed(c) && t.is_closed(a) && !t.is_closed(r));
         assert!(t.is_closed(c) && !t.is_open_goal(c));
         assert_eq!(t.open_goals(), &[b]);
         assert!(!t.is_proof_closed());
-        t.apply(b, app(2), vec![]).unwrap();
+        t.apply(b, app(2), ViewId::ZERO, vec![]).unwrap();
         assert!(t.is_closed(b) && t.is_proof_closed());
         assert!(t.open_goals().is_empty());
         assert_eq!(t.num_nodes(), 4);
@@ -1033,15 +1034,15 @@ mod proof_tree {
         let mut t = ProofTree::new(Sequent::new());
         let r = t.root();
         // closing the root closes the proof
-        t.apply(r, app(0), vec![]).unwrap();
+        t.apply(r, app(0), ViewId::ZERO, vec![]).unwrap();
         assert!(t.is_proof_closed());
         assert_eq!(
-            t.apply(r, app(0), vec![]),
+            t.apply(r, app(0), ViewId::ZERO, vec![]),
             Err(ProofError::NotAnOpenGoal(r))
         );
         let bogus = NodeId::from_u32(5);
         assert_eq!(
-            t.apply(bogus, app(0), vec![]),
+            t.apply(bogus, app(0), ViewId::ZERO, vec![]),
             Err(ProofError::UnknownNode(bogus))
         );
         // goals are swap-removed: the bookkeeping stays consistent
@@ -1052,19 +1053,480 @@ mod proof_tree {
             .apply(
                 t.root(),
                 app(1),
+                ViewId::ZERO,
                 (0..4).map(|_| Branch::new(s.clone())).collect(),
             )
             .unwrap();
         let kids: Vec<_> = t.step(step).children().into_iter().collect();
-        t.apply(kids[1], app(2), vec![]).unwrap();
-        t.apply(kids[0], app(2), vec![]).unwrap();
+        t.apply(kids[1], app(2), ViewId::ZERO, vec![]).unwrap();
+        t.apply(kids[0], app(2), ViewId::ZERO, vec![]).unwrap();
         let mut left = t.open_goals().to_vec();
         left.sort();
         assert_eq!(left, vec![kids[2], kids[3]]);
         assert!(left.iter().all(|&g| t.is_open_goal(g)));
         assert!(!t.is_closed(t.root()));
-        t.apply(kids[3], app(2), vec![]).unwrap();
-        t.apply(kids[2], app(2), vec![]).unwrap();
+        t.apply(kids[3], app(2), ViewId::ZERO, vec![]).unwrap();
+        t.apply(kids[2], app(2), ViewId::ZERO, vec![]).unwrap();
         assert!(t.is_proof_closed());
+    }
+}
+
+mod threads {
+    use std::ops::ControlFlow;
+
+    use super::*;
+
+    fn send_sync<T: Send + Sync>() {}
+
+    /// What parallel proof search can already rely on: these are shared between threads.
+    #[test]
+    fn shared_types_are_send_and_sync() {
+        send_sync::<TermPool>();
+        send_sync::<Sequent>();
+        send_sync::<Rule>();
+        send_sync::<RuleIndex>();
+        send_sync::<ProofTree>();
+        send_sync::<Application>();
+    }
+
+    /// Matching only reads the pool, so threads can match against one pool at the same time.
+    #[test]
+    fn concurrent_matching_on_a_shared_pool() {
+        let mut f = fx();
+        let mut r = RuleBuilder::new(f.pool.signature().clone(), f.names.intern("eq_and"));
+        let phi = r.declare_sv(f.names.intern("phi"), SvKind::Formula, SortReq::Any);
+        let pv = r.sv(phi).unwrap();
+        let and = r.app(f.and, &[], &[], &[pv, pv]).unwrap();
+        r.find_term(and);
+        let rule = r.finish().unwrap();
+        let p = f.c(f.p);
+        let pp = f.and(p, p);
+        let terms: Vec<_> = (0..64).map(|_| f.and(pp, pp)).collect();
+        let seq = Sequent::new();
+        let (pool, rule, seq) = (&f.pool, &rule, &seq);
+        std::thread::scope(|s| {
+            let hs: Vec<_> = (0..4)
+                .map(|_| {
+                    s.spawn(|| {
+                        let mut b = Bindings::new(rule);
+                        let mut n = 0;
+                        for &t in &terms {
+                            let _ = match_term(pool, rule, seq, t, &mut b, &mut |_| {
+                                n += 1;
+                                ControlFlow::Continue(())
+                            });
+                        }
+                        n
+                    })
+                })
+                .collect();
+            for h in hs {
+                assert_eq!(h.join().unwrap(), 64);
+            }
+        });
+    }
+}
+
+mod forking {
+    use super::*;
+
+    /// A chain of distinct int terms `ifThenElse(p, prev, three)` (arity 3, so the argument
+    /// storage crosses chunk boundaries); returns the last one.
+    fn chain(f: &mut Fx, n: usize) -> Vec<TermIdx> {
+        let z = f.c(f.zero);
+        chain_from(f, z, n)
+    }
+
+    fn chain_from(f: &mut Fx, start: TermIdx, n: usize) -> Vec<TermIdx> {
+        let (p, three) = (f.c(f.p), f.c(f.three));
+        let mut t = start;
+        let mut v = Vec::new();
+        for _ in 0..n {
+            t = f.pool.mk_inferred(f.ite, &[], &[p, t, three]).unwrap();
+            v.push(t);
+        }
+        v
+    }
+
+    fn check_chain(pool: &TermPool, v: &[TermIdx]) {
+        for w in v.windows(2) {
+            let subs = pool.subs_of(w[1]);
+            assert_eq!(subs.len(), 3);
+            assert_eq!(subs[1], w[0]);
+        }
+    }
+
+    #[test]
+    fn fork_shares_the_past_and_diverges() {
+        let mut f = fx();
+        let old = chain(&mut f, 10);
+        let mut other = f.pool.fork();
+        // everything created before the fork reads the same in both pools
+        check_chain(&f.pool, &old);
+        check_chain(&other, &old);
+        for &t in &old {
+            assert_eq!(f.pool.subs_of(t), other.subs_of(t));
+        }
+        // building an old term again finds it, in both
+        let (p, three) = (f.c(f.p), f.c(f.three));
+        let again = other.mk_inferred(f.ite, &[], &[p, old[2], three]).unwrap();
+        assert_eq!(again, old[3]);
+        let again = f.pool.mk_inferred(f.ite, &[], &[p, old[2], three]).unwrap();
+        assert_eq!(again, old[3]);
+        // new terms are independent: the same index denotes different terms
+        let mine = f.and(p, p);
+        let (theirs, q) = {
+            let q = other.mk_inferred(f.le, &[], &[three, three]).unwrap();
+            (other.mk_inferred(f.and, &[], &[q, q]).unwrap(), q)
+        };
+        assert_ne!(f.pool.subs_of(mine), other.subs_of(theirs));
+        assert_eq!(other.subs_of(theirs), &[q, q]);
+        // and each is canonical in its own pool
+        assert_eq!(f.and(p, p), mine);
+        let q2 = other.mk_inferred(f.le, &[], &[three, three]).unwrap();
+        assert_eq!(other.mk_inferred(f.and, &[], &[q2, q2]).unwrap(), theirs);
+        // a term of the other pool is not visible here
+        assert!(other.num_terms() != f.pool.num_terms() || mine != theirs);
+    }
+
+    #[test]
+    fn many_forks_keep_the_layers_few() {
+        let mut f = fx();
+        let mut all = chain(&mut f, 5);
+        let mut pools = Vec::new();
+        for round in 0..200 {
+            // a few new terms, then a fork; the fork is kept so that it shares the layers
+            let start = *all.last().unwrap();
+            let more = chain_from(&mut f, start, 6 + round % 3);
+            all.extend(more);
+            pools.push(f.pool.fork());
+        }
+        assert!(
+            f.pool.term_table_layers() <= 12,
+            "{} layers",
+            f.pool.term_table_layers()
+        );
+        // everything is still found, with the same index, in the donor and in the last fork
+        let (p, three) = (f.c(f.p), f.c(f.three));
+        let last = pools.last().unwrap();
+        let mut ids = std::collections::HashSet::new();
+        for w in all.windows(2) {
+            if f.pool.subs_of(w[1]).len() == 3 && f.pool.subs_of(w[1])[1] == w[0] {
+                let t = f.pool.mk_inferred(f.ite, &[], &[p, w[0], three]).unwrap();
+                assert_eq!(t, w[1]);
+                assert_eq!(last.subs_of(t)[1], w[0]);
+                ids.insert(t);
+            }
+        }
+        assert!(ids.len() > 1000);
+    }
+
+    #[test]
+    fn crossing_chunk_boundaries() {
+        let mut f = fx();
+        let a = chain(&mut f, 3000);
+        let mut other = f.pool.fork();
+        let b = chain(&mut f, 3000); // re-finds the first 3000, then... the same chain
+        assert_eq!(a, b);
+        check_chain(&f.pool, &a);
+        check_chain(&other, &a);
+        // extend in the fork past several chunk boundaries
+        let (p, three) = (f.c(f.p), f.c(f.three));
+        let mut t = *a.last().unwrap();
+        let mut v = a.clone();
+        for _ in 0..5000 {
+            t = other.mk_inferred(f.ite, &[], &[p, t, three]).unwrap();
+            v.push(t);
+        }
+        check_chain(&other, &v);
+        // freeze and thaw
+        let frozen = other.freeze();
+        let mut thawed = frozen.thaw();
+        check_chain(&frozen, &v);
+        check_chain(&thawed, &v);
+        let more = thawed.mk_inferred(f.ite, &[], &[p, t, three]).unwrap();
+        assert_eq!(thawed.subs_of(more)[1], t);
+        assert_eq!(frozen.num_terms() + 1, thawed.num_terms());
+    }
+
+    #[test]
+    fn rollback_stops_at_the_fork() {
+        let mut f = fx();
+        let p = f.c(f.p);
+        let cp = f.pool.checkpoint();
+        let _a = f.and(p, p);
+        // rolling back within the private part is fine
+        f.pool.rollback(cp).unwrap();
+        let cp = f.pool.checkpoint();
+        let _a = f.and(p, p);
+        let _other = f.pool.fork();
+        assert_eq!(f.pool.rollback(cp), Err(LogicError::RollbackPastFork));
+        // a checkpoint taken after the fork works again
+        let cp = f.pool.checkpoint();
+        let n = f.pool.num_terms();
+        let c3 = f.c(f.three);
+        let q = f.pool.mk_inferred(f.le, &[], &[c3, c3]).unwrap();
+        let _ = f.and(q, q);
+        f.pool.rollback(cp).unwrap();
+        assert_eq!(f.pool.num_terms(), n);
+    }
+
+    #[test]
+    fn threads_extend_a_frozen_pool() {
+        let mut f = fx();
+        let base = chain(&mut f, 100);
+        let sig = f.pool.signature().clone();
+        let frozen = std::mem::replace(&mut f.pool, TermPool::new(sig)).freeze();
+        let (and, le, p0, three0) = (f.and, f.le, f.p, f.three);
+        let base = &base;
+        let frozen = &frozen;
+        let results: Vec<(TermIdx, usize)> = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..4usize)
+                .map(|k| {
+                    s.spawn(move || {
+                        let mut pool = frozen.thaw();
+                        let p = pool.mk_inferred(p0, &[], &[]).unwrap();
+                        let three = pool.mk_inferred(three0, &[], &[]).unwrap();
+                        // worker k builds k+1 different formulas on top of the shared chain
+                        let mut last = p;
+                        for j in 0..=k {
+                            let q = pool.mk_inferred(le, &[], &[three, three]).unwrap();
+                            let top = base[base.len() - 1 - j];
+                            let r = pool.mk_inferred(le, &[], &[top, three]).unwrap();
+                            last = pool.mk_inferred(and, &[], &[q, r]).unwrap();
+                        }
+                        // the shared past is intact and canonical
+                        assert_eq!(pool.subs_of(*base.last().unwrap()).len(), 3);
+                        (last, pool.num_terms())
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        // workers started at the same point, so their first new term has the same index even though
+        // the terms differ, and the frozen pool did not change
+        let n = frozen.num_terms();
+        for (k, (_, count)) in results.iter().enumerate() {
+            assert!(*count > n, "worker {k} added terms");
+        }
+        assert_eq!(frozen.num_terms(), n);
+        let _ = results;
+    }
+}
+
+mod fragments {
+    use super::*;
+
+    fn app(rule: u32) -> Application {
+        Application {
+            rule,
+            find: None,
+            assumes: Box::new([]),
+            inst: Instantiation {
+                svs: Box::new([]),
+                slots: Box::new([]),
+            },
+        }
+    }
+
+    /// What a worker does with its goal: `k + 2` rule applications that each add a new formula
+    /// `and(prev, prev)` (new in the worker's own pool), then a closing one.
+    fn work(
+        mut pool: TermPool,
+        goal: Sequent,
+        base: TermIdx,
+        and: OpDeclId,
+        k: usize,
+    ) -> (ProofTree, TermIdx) {
+        let mut tree = ProofTree::new(goal.clone());
+        let (mut cur, mut seq, mut prev) = (tree.root(), goal, base);
+        let mut first = None;
+        for _ in 0..k + 2 {
+            prev = pool.mk_inferred(and, &[], &[prev, prev]).unwrap();
+            first.get_or_insert(prev);
+            seq = seq.add(&pool, Side::Antecedent, prev).unwrap().sequent;
+            let step = tree
+                .apply(cur, app(1), ViewId::ZERO, vec![Branch::new(seq.clone())])
+                .unwrap();
+            cur = tree.step(step).children().first().unwrap();
+        }
+        tree.apply(cur, app(2), ViewId::ZERO, vec![]).unwrap();
+        tree.set_view(ViewId::ZERO, pool.freeze()).unwrap();
+        (tree, first.unwrap())
+    }
+
+    /// The whole scenario; `reverse` starts the workers in the opposite order.
+    fn scenario(reverse: bool) -> (Fx, ProofTree, Vec<TermIdx>) {
+        let mut f = fx();
+        let p = f.c(f.p);
+        let mut base = vec![p];
+        for _ in 0..4 {
+            let last = *base.last().unwrap();
+            base.push(f.and(last, p));
+        }
+        let root = Sequent::new();
+        let mut tree = ProofTree::new(root.clone());
+        tree.set_view(ViewId::ZERO, f.pool.fork().freeze()).unwrap();
+        let branches = base[..4]
+            .iter()
+            .map(|&b| Branch::new(root.add(&f.pool, Side::Succedent, b).unwrap().sequent))
+            .collect();
+        let step = tree
+            .apply(tree.root(), app(0), ViewId::ZERO, branches)
+            .unwrap();
+        let goals: Vec<_> = tree.step(step).children().into_iter().collect();
+        // every worker gets its own fork, taken before any of them runs
+        let jobs: Vec<_> = goals
+            .iter()
+            .enumerate()
+            .map(|(k, &g)| (k, f.pool.fork(), tree.sequent(g).clone()))
+            .collect();
+        let and = f.and;
+        let mut results: Vec<Option<(ProofTree, TermIdx)>> = (0..4).map(|_| None).collect();
+        std::thread::scope(|s| {
+            let mut jobs = jobs;
+            if reverse {
+                jobs.reverse();
+            }
+            let hs: Vec<_> = jobs
+                .into_iter()
+                .map(|(k, pool, seq)| {
+                    let b = base[k + 1];
+                    (k, s.spawn(move || work(pool, seq, b, and, k)))
+                })
+                .collect();
+            for (k, h) in hs {
+                results[k] = Some(h.join().unwrap());
+            }
+        });
+        let mut firsts = Vec::new();
+        for (k, r) in results.into_iter().enumerate() {
+            let (frag, first) = r.unwrap();
+            firsts.push(first);
+            tree.graft(goals[k], frag).unwrap();
+        }
+        (f, tree, firsts)
+    }
+
+    fn shape(t: &ProofTree) -> Vec<(Option<NodeId>, u32, Option<u32>)> {
+        (0..t.num_nodes() as u32)
+            .map(NodeId::from_u32)
+            .map(|n| {
+                (
+                    t.parent(n),
+                    t.node(n).depth(),
+                    t.step_of(n).map(|s| s.application().rule),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn workers_with_forked_pools_graft_into_one_proof() {
+        let (f, tree, firsts) = scenario(false);
+        assert!(tree.is_proof_closed() && tree.open_goals().is_empty());
+        // root + 4 goals + (2 + 3 + 4 + 5) nodes below them; 1 + (3 + 4 + 5 + 6) steps
+        assert_eq!(tree.num_nodes(), 19);
+        assert_eq!(tree.num_steps(), 19);
+        // the workers' first new terms have the same index but are different terms, each in its
+        // own pool snapshot
+        assert!(firsts.windows(2).all(|w| w[0] == w[1]));
+        let mut shown = Vec::new();
+        for n in (0..tree.num_nodes() as u32).map(NodeId::from_u32) {
+            let Some(pool) = tree.view_of(n) else {
+                panic!("no view for {n:?}")
+            };
+            for (_, t) in tree.sequent(n).iter() {
+                assert!(pool.is_formula(t));
+            }
+            if tree.node(n).depth() == 2 {
+                let a = tree.sequent(n).antecedent();
+                if let Some(&t) = a.as_slice().first() {
+                    if t == firsts[0] {
+                        shown.push(pool.show_term(&f.names, t).to_string());
+                    }
+                }
+            }
+        }
+        shown.sort();
+        shown.dedup();
+        assert_eq!(shown.len(), 4, "{shown:?}");
+        // depth bookkeeping: a node of fragment k at step j is at depth 2 + j
+        let deepest = (0..tree.num_nodes() as u32)
+            .map(|n| tree.node(NodeId::from_u32(n)).depth())
+            .max()
+            .unwrap();
+        assert_eq!(deepest, 1 + 5);
+    }
+
+    #[test]
+    fn grafting_is_independent_of_scheduling() {
+        let (_, a, _) = scenario(false);
+        let (_, b, _) = scenario(true);
+        assert_eq!(shape(&a), shape(&b));
+        assert_eq!(a.num_steps(), b.num_steps());
+    }
+
+    #[test]
+    fn graft_errors_and_open_fragments() {
+        let mut f = fx();
+        let p = f.c(f.p);
+        let s = Sequent::new()
+            .add(&f.pool, Side::Antecedent, p)
+            .unwrap()
+            .sequent;
+        let mut tree = ProofTree::new(s.clone());
+        let r = tree.root();
+        // a fragment whose view was never set
+        let mut frag = ProofTree::new(s.clone());
+        frag.apply(
+            frag.root(),
+            app(1),
+            ViewId::ZERO,
+            vec![Branch::new(s.clone())],
+        )
+        .unwrap();
+        let fcopy_root = frag.root();
+        assert_eq!(
+            tree.graft(r, ProofTree::new(Sequent::new())),
+            Err(ProofError::GraftMismatch(r))
+        );
+        let _ = fcopy_root;
+        assert_eq!(
+            tree.graft(r, frag),
+            Err(ProofError::ViewMissing(ViewId::ZERO))
+        );
+        // a fragment that did nothing leaves the goal open
+        let mut empty = ProofTree::new(s.clone());
+        empty
+            .set_view(ViewId::ZERO, f.pool.fork().freeze())
+            .unwrap();
+        tree.graft(r, empty).unwrap();
+        assert!(tree.is_open_goal(r) && tree.num_nodes() == 1);
+        // a fragment with open goals: they become goals of the tree, and grafting twice fails
+        let mut frag = ProofTree::new(s.clone());
+        frag.apply(
+            frag.root(),
+            app(1),
+            ViewId::ZERO,
+            vec![Branch::new(s.clone()), Branch::new(s.clone())],
+        )
+        .unwrap();
+        frag.set_view(ViewId::ZERO, f.pool.fork().freeze()).unwrap();
+        let again = ProofTree::new(s.clone());
+        tree.graft(r, frag).unwrap();
+        assert_eq!(tree.open_goals().len(), 2);
+        assert!(!tree.is_open_goal(r) && tree.step_of(r).is_some());
+        assert_eq!(tree.graft(r, again), Err(ProofError::NotAnOpenGoal(r)));
+        // views: setting twice fails
+        tree.set_view(ViewId::ZERO, f.pool.fork().freeze()).unwrap();
+        assert_eq!(
+            tree.set_view(ViewId::ZERO, f.pool.fork().freeze()),
+            Err(ProofError::ViewAlreadySet(ViewId::ZERO))
+        );
+        assert_eq!(
+            tree.set_view(ViewId::from_u32(99), f.pool.fork().freeze()),
+            Err(ProofError::UnknownView(ViewId::from_u32(99)))
+        );
     }
 }

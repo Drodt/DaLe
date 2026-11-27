@@ -15,14 +15,22 @@
 //! Nodes are numbered in creation order, the children of one step are consecutive, and a node's
 //! children always have larger ids than the node.
 //!
+//! Terms: the term indices in a node's sequent only mean something in the pool of the worker that
+//! created the node (see [`TermPool::fork`](crate::TermPool::fork)). Every node therefore refers
+//! to a [`ViewId`], a pool snapshot registered with the tree. For parallel proof search each worker
+//! builds its own *fragment* (a small `ProofTree` for one goal, with its own pool), and the
+//! fragments are [grafted](ProofTree::graft) into the main tree in a deterministic order after
+//! the parallel phase; node ids of the result do not depend on thread scheduling.
+//!
 //! This module does not compute rule applications: [`ProofTree::apply`] takes the already
 //! computed [`Application`] and the resulting [`Branch`]es.
 
 use dale_util::symbol::Symbol;
 
-use crate::ids::{NodeId, StepId};
+use crate::ids::{NodeId, StepId, ViewId};
 use crate::index::RuleId;
 use crate::matcher::Instantiation;
+use crate::pool::FrozenPool;
 use crate::pos::PosInOccurrence;
 use crate::sequent::Sequent;
 
@@ -60,6 +68,7 @@ pub struct Node {
     created_by: Option<(StepId, u32)>,
     label: Option<Symbol>,
     depth: u32,
+    view: ViewId,
     sequent: Sequent,
 }
 
@@ -80,6 +89,10 @@ impl Node {
     }
     pub fn sequent(&self) -> &Sequent {
         &self.sequent
+    }
+    /// The pool snapshot the sequent's term indices belong to; see [`ProofTree::view`].
+    pub fn view(&self) -> ViewId {
+        self.view
     }
 }
 
@@ -142,6 +155,13 @@ pub enum ProofError {
     UnknownNode(NodeId),
     /// The node already has a step (it is not a leaf).
     NotAnOpenGoal(NodeId),
+    UnknownView(ViewId),
+    /// The view already has a pool.
+    ViewAlreadySet(ViewId),
+    /// A fragment refers to a view whose pool was never set.
+    ViewMissing(ViewId),
+    /// The root of the fragment does not have the sequent of the goal it is grafted onto.
+    GraftMismatch(NodeId),
 }
 
 const NO_GOAL: u32 = u32::MAX;
@@ -158,12 +178,16 @@ pub struct ProofTree {
     /// Position in `goals`, or `NO_GOAL`.
     goal_pos: Vec<u32>,
     goals: Vec<NodeId>,
+    /// Pool snapshots; `None` until set. View 0 is the one of the tree's creator.
+    views: Vec<Option<FrozenPool>>,
 }
 
 impl ProofTree {
-    /// A tree consisting of the root with the sequent to prove: one open goal.
+    /// A tree consisting of the root with the sequent to prove: one open goal. The root's view is
+    /// [`ViewId::ZERO`], whose pool is set later with [`set_view`](Self::set_view).
     pub fn new(root: Sequent) -> Self {
         let mut t = Self {
+            views: vec![None],
             nodes: Vec::new(),
             steps: Vec::new(),
             step_of: Vec::new(),
@@ -176,9 +200,38 @@ impl ProofTree {
             created_by: None,
             label: None,
             depth: 0,
+            view: ViewId::ZERO,
             sequent: root,
         });
         t
+    }
+
+    /// Reserves a view (a pool snapshot to be set later) and returns its id.
+    pub fn add_view(&mut self) -> ViewId {
+        self.views.push(None);
+        ViewId::from_u32(self.views.len() as u32 - 1)
+    }
+
+    /// Sets the pool of a view, once.
+    pub fn set_view(&mut self, id: ViewId, pool: FrozenPool) -> Result<(), ProofError> {
+        match self.views.get_mut(id.index()) {
+            None => Err(ProofError::UnknownView(id)),
+            Some(Some(_)) => Err(ProofError::ViewAlreadySet(id)),
+            Some(slot) => {
+                *slot = Some(pool);
+                Ok(())
+            }
+        }
+    }
+
+    /// The pool of a view, if it has been set.
+    pub fn view(&self, id: ViewId) -> Option<&FrozenPool> {
+        self.views.get(id.index())?.as_ref()
+    }
+
+    /// The pool that the sequent of `id` lives in.
+    pub fn view_of(&self, id: NodeId) -> Option<&FrozenPool> {
+        self.view(self.nodes[id.index()].view)
     }
 
     pub fn root(&self) -> NodeId {
@@ -248,13 +301,18 @@ impl ProofTree {
     }
 
     /// Applies a rule to the open goal `goal`: records the step and creates one child per branch.
-    /// No branches closes the goal. Returns the step.
+    /// No branches closes the goal. `view` is the view of the pool the branches' sequents were
+    /// built in. Returns the step.
     pub fn apply(
         &mut self,
         goal: NodeId,
         app: Application,
+        view: ViewId,
         branches: Vec<Branch>,
     ) -> Result<StepId, ProofError> {
+        if view.index() >= self.views.len() {
+            return Err(ProofError::UnknownView(view));
+        }
         if goal.index() >= self.nodes.len() {
             return Err(ProofError::UnknownNode(goal));
         }
@@ -272,6 +330,7 @@ impl ProofTree {
                 created_by: Some((step, i as u32)),
                 label: b.label,
                 depth,
+                view,
                 sequent: b.sequent,
             });
         }
@@ -316,5 +375,88 @@ impl ProofTree {
             }
             n = p;
         }
+    }
+}
+
+impl ProofTree {
+    /// Replaces the open goal `goal` by the work done in `frag`, a tree that was started with
+    /// `goal`'s sequent as its root (typically by a worker with a [forked](crate::TermPool::fork)
+    /// pool). The fragment's steps and nodes are appended, in the order they have in the
+    /// fragment; its views are appended too. The fragment's root is not copied: `goal` plays that
+    /// role, so `goal` gets the fragment root's step.
+    ///
+    /// All views of the fragment must have been set. A fragment without any step changes
+    /// nothing.
+    pub fn graft(&mut self, goal: NodeId, frag: ProofTree) -> Result<(), ProofError> {
+        if goal.index() >= self.nodes.len() {
+            return Err(ProofError::UnknownNode(goal));
+        }
+        if !self.is_open_goal(goal) {
+            return Err(ProofError::NotAnOpenGoal(goal));
+        }
+        if frag.nodes[0].sequent != self.nodes[goal.index()].sequent {
+            return Err(ProofError::GraftMismatch(goal));
+        }
+        if let Some(i) = frag.views.iter().position(Option::is_none) {
+            return Err(ProofError::ViewMissing(ViewId::from_u32(i as u32)));
+        }
+        let ProofTree {
+            nodes,
+            steps,
+            step_of,
+            open_children,
+            goals,
+            views,
+            ..
+        } = frag;
+        let Some(root_step) = step_of[0] else {
+            return Ok(());
+        };
+        let node_base = self.nodes.len() as u32;
+        let step_base = self.steps.len() as u32;
+        let view_base = self.views.len() as u32;
+        let depth0 = self.nodes[goal.index()].depth;
+        // fragment node 0 is `goal`, fragment node f >= 1 becomes node_base + f - 1
+        let map = |n: NodeId| match n.as_u32() {
+            0 => goal,
+            f => NodeId::from_u32(node_base + f - 1),
+        };
+        let map_step = |s: StepId| StepId::from_u32(step_base + s.as_u32());
+        self.views.extend(views);
+        for (f, n) in nodes.into_iter().enumerate().skip(1) {
+            self.nodes.push(Node {
+                parent: n.parent.map(map),
+                created_by: n.created_by.map(|(s, k)| (map_step(s), k)),
+                label: n.label,
+                depth: n.depth + depth0,
+                view: ViewId::from_u32(view_base + n.view.as_u32()),
+                sequent: n.sequent,
+            });
+            self.step_of.push(step_of[f].map(map_step));
+            self.open_children.push(open_children[f]);
+            self.goal_pos.push(NO_GOAL);
+        }
+        for s in steps {
+            self.steps.push(Step {
+                node: map(s.node),
+                app: s.app,
+                children: NodeRange {
+                    start: map(NodeId::from_u32(s.children.start)).as_u32(),
+                    len: s.children.len,
+                },
+            });
+        }
+        self.remove_goal(goal);
+        self.step_of[goal.index()] = Some(map_step(root_step));
+        self.open_children[goal.index()] = open_children[0];
+        for g in goals {
+            let g = map(g);
+            self.goal_pos[g.index()] = self.goals.len() as u32;
+            self.goals.push(g);
+        }
+        if open_children[0] == 0 {
+            self.child_closed(goal);
+        }
+        Ok(())
     }
 }

@@ -1,13 +1,16 @@
 //! The [`TermPool`]: one container for the instantiated sorts, instantiated operators and the
 //! hash-consed terms of a logic.
 //!
-//! * Everything is append-only; an index handed out stays valid (until a [`rollback`] past it).
+//! * Everything is append-only; an index handed out stays valid (until a [`rollback`] past it,
+//!   which is only possible back to the last fork).
 //! * Equal sorts / operators / terms have equal indices, so comparison is `==` on a `u32`.
 //! * A term is a small header; its arguments live in one shared vector.
 //!
-//! Concurrency: the pool is single-threaded for now. The plan is to keep the same layout but put
-//! the vectors in chunked (address-stable) storage and shard the intern tables behind locks, so
-//! that readers need no lock at all.
+//! Concurrency: a pool is single-threaded, but it can be *forked* ([`TermPool::fork`]): the
+//! sorts, operators and terms created so far become a shared read-only part, and the two pools
+//! then grow independently (ids created after the fork may coincide in the two pools; nothing may
+//! mix them). Parallel proof search gives every worker its own pool and forks when a goal is
+//! handed to another worker, so the hot path needs no locks. See [`arena`](crate::arena).
 //!
 //! [`rollback`]: TermPool::rollback
 
@@ -15,10 +18,11 @@ use std::collections::HashSet;
 use std::ops::Index;
 use std::sync::Arc;
 
+use crate::arena::Arena;
 use crate::error::LogicError;
 use crate::ids::{OpDeclId, OpIdx, SortDeclId, SortIdx, TermIdx};
 use crate::sig::{GenArgPat, GenKind, GenParam, MetaValue, OpFlags, OpKind, Signature, SortPat};
-use crate::table::{InternTable, mix};
+use crate::table::{Interner, mix};
 
 /// An argument of a generic declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -192,13 +196,14 @@ impl Term {
 /// Indices created after the checkpoint (sorts, operators and terms) are invalid after the
 /// rollback and must not be used any more; using one is either a panic or, if the slot has been
 /// reused by a new entry, a silently different term. A checkpoint can only be used on the pool
-/// that created it, and only while the pool has not been rolled back past it.
+/// that created it, only while the pool has not been rolled back past it, and only until the pool
+/// is forked or frozen (see [`TermPool::fork`]).
 #[derive(Clone, Copy, Debug)]
 pub struct Checkpoint {
-    sorts: usize,
-    ops: usize,
-    terms: usize,
-    args: usize,
+    sorts: u32,
+    ops: u32,
+    terms: u32,
+    args: u32,
 }
 
 // Hashing of intern keys.
@@ -247,13 +252,13 @@ fn hash_term(op: OpIdx, args: &[TermIdx]) -> u64 {
 
 pub struct TermPool {
     pub(crate) sig: Arc<Signature>,
-    sorts: Vec<SortData>,
-    sort_table: InternTable,
-    ops: Vec<OpData>,
-    op_table: InternTable,
-    terms: Vec<Term>,
-    args: Vec<TermIdx>,
-    term_table: InternTable,
+    sorts: Arena<SortData>,
+    sort_table: Interner,
+    ops: Arena<OpData>,
+    op_table: Interner,
+    terms: Arena<Term>,
+    args: Arena<TermIdx>,
+    term_table: Interner,
     top: SortIdx,
     formula: SortIdx,
     pub(crate) var_decl: Option<OpDeclId>,
@@ -263,7 +268,7 @@ impl Index<TermIdx> for TermPool {
     type Output = Term;
     #[inline]
     fn index(&self, i: TermIdx) -> &Term {
-        &self.terms[i.index()]
+        self.terms.get(i.as_u32())
     }
 }
 
@@ -271,7 +276,7 @@ impl Index<SortIdx> for TermPool {
     type Output = SortData;
     #[inline]
     fn index(&self, i: SortIdx) -> &SortData {
-        &self.sorts[i.index()]
+        self.sorts.get(i.as_u32())
     }
 }
 
@@ -279,7 +284,7 @@ impl Index<OpIdx> for TermPool {
     type Output = OpData;
     #[inline]
     fn index(&self, i: OpIdx) -> &OpData {
-        &self.ops[i.index()]
+        self.ops.get(i.as_u32())
     }
 }
 
@@ -288,13 +293,13 @@ impl TermPool {
         let mut pool = TermPool {
             var_decl: sig.bound_var(),
             sig,
-            sorts: Vec::new(),
-            sort_table: InternTable::new(),
-            ops: Vec::new(),
-            op_table: InternTable::new(),
-            terms: Vec::new(),
-            args: Vec::new(),
-            term_table: InternTable::new(),
+            sorts: Arena::default(),
+            sort_table: Interner::new(),
+            ops: Arena::default(),
+            op_table: Interner::new(),
+            terms: Arena::default(),
+            args: Arena::default(),
+            term_table: Interner::new(),
             top: SortIdx::MAX,
             formula: SortIdx::MAX,
         };
@@ -324,18 +329,18 @@ impl TermPool {
     /// The subterms of `t`.
     #[inline]
     pub fn subs_of(&self, t: TermIdx) -> &[TermIdx] {
-        let t = &self.terms[t.index()];
-        &self.args[t.args_start as usize..(t.args_start + t.args_len) as usize]
+        let t = self.terms.get(t.as_u32());
+        self.args.slice(t.args_start, t.args_len as usize)
     }
 
     #[inline]
     pub fn sort_of(&self, t: TermIdx) -> SortIdx {
-        self.terms[t.index()].sort
+        self.terms.get(t.as_u32()).sort
     }
 
     #[inline]
     pub fn op_of(&self, t: TermIdx) -> OpIdx {
-        self.terms[t.index()].op
+        self.terms.get(t.as_u32()).op
     }
 
     /// Whether `t` is a formula, i.e. its sort is the formula sort or a subsort of it.
@@ -356,10 +361,23 @@ impl TermPool {
         self.ops.len()
     }
 
+    /// How many frozen layers a lookup of a new term has to probe (a statistic; stays small
+    /// because forks merge layers of similar size).
+    pub fn term_table_layers(&self) -> usize {
+        self.term_table.layers()
+    }
+
     /// `a <= b` in the sort hierarchy (reflexive).
     #[inline]
     pub fn is_subsort(&self, a: SortIdx, b: SortIdx) -> bool {
-        a == b || b == self.top || self.sorts[a.index()].ancestors.binary_search(&b).is_ok()
+        a == b
+            || b == self.top
+            || self
+                .sorts
+                .get(a.as_u32())
+                .ancestors
+                .binary_search(&b)
+                .is_ok()
     }
 
     // ---------------------------------------------------------------- sorts
@@ -368,7 +386,7 @@ impl TermPool {
     pub fn mk_sort(&mut self, decl: SortDeclId, args: &[GenArg]) -> Result<SortIdx, LogicError> {
         let h = hash_sort(decl, args);
         let found = self.sort_table.find(h, |i| {
-            let d = &self.sorts[i as usize];
+            let d = self.sorts.get(i);
             d.decl == decl && *d.args == *args
         });
         if let Some(i) = found {
@@ -381,21 +399,20 @@ impl TermPool {
         for e in &d.extends {
             let s = self.inst_sort(e, args)?;
             anc.push(s);
-            anc.extend_from_slice(&self.sorts[s.index()].ancestors);
+            anc.extend_from_slice(&self.sorts.get(s.as_u32()).ancestors);
         }
         anc.retain(|&s| s != self.top);
         anc.sort_unstable();
         anc.dedup();
         // Instantiating the supersorts cannot have created this sort: they are declared before it.
-        let idx = self.sorts.len() as u32;
-        self.sorts.push(SortData {
+        let idx = self.sorts.push(SortData {
             decl,
             args: args.into(),
             ancestors: anc.into(),
         });
         let sorts = &self.sorts;
         self.sort_table.insert(h, idx, |i| {
-            let d = &sorts[i as usize];
+            let d = sorts.get(i);
             hash_sort(d.decl, &d.args)
         });
         Ok(SortIdx::from_u32(idx))
@@ -439,7 +456,7 @@ impl TermPool {
             match (&p.kind, a) {
                 (GenKind::Sort, GenArg::Sort(_)) => {}
                 (GenKind::Const(pat), GenArg::Const(t)) => {
-                    let term = &self.terms[t.index()];
+                    let term = self.terms.get(t.as_u32());
                     if term.loose != 0 {
                         return Err(LogicError::ConstNotClosed(i));
                     }
@@ -469,8 +486,8 @@ impl TermPool {
         meta: &[MetaValue],
     ) -> Result<OpIdx, LogicError> {
         let h = hash_op(decl, generics, meta);
-        let eq = |ops: &Vec<OpData>, i: u32| {
-            let d = &ops[i as usize];
+        let eq = |ops: &Arena<OpData>, i: u32| {
+            let d = ops.get(i);
             d.decl == decl && *d.generics == *generics && *d.meta == *meta
         };
         if let Some(i) = self.op_table.find(h, |i| eq(&self.ops, i)) {
@@ -503,8 +520,7 @@ impl TermPool {
             (OpKind::BoundVar, [MetaValue::Nat(n)]) => Some(*n),
             _ => None,
         };
-        let idx = self.ops.len() as u32;
-        self.ops.push(OpData {
+        let idx = self.ops.push(OpData {
             decl,
             generics: generics.into(),
             meta: meta.into(),
@@ -516,7 +532,7 @@ impl TermPool {
         });
         let ops = &self.ops;
         self.op_table.insert(h, idx, |i| {
-            let d = &ops[i as usize];
+            let d = ops.get(i);
             hash_op(d.decl, &d.generics, &d.meta)
         });
         Ok(OpIdx::from_u32(idx))
@@ -527,7 +543,7 @@ impl TermPool {
     /// Creates (or finds) the term `op(args)`, checking the number and sorts of the arguments
     /// and, for binders, the sorts of the variables bound in the bound argument.
     pub fn mk(&mut self, op: OpIdx, args: &[TermIdx]) -> Result<TermIdx, LogicError> {
-        let od = &self.ops[op.index()];
+        let od = self.ops.get(op.as_u32());
         if od.arg_sorts.len() != args.len() {
             return Err(LogicError::ArgCount {
                 expected: od.arg_sorts.len(),
@@ -535,7 +551,7 @@ impl TermPool {
             });
         }
         for (index, (a, &expected)) in args.iter().zip(&od.arg_sorts).enumerate() {
-            let found = self.terms[a.index()].sort;
+            let found = self.terms.get(a.as_u32()).sort;
             if !self.is_subsort(found, expected) {
                 return Err(LogicError::ArgSort {
                     index,
@@ -563,7 +579,7 @@ impl TermPool {
     /// argument sorts and binder sorts. Violations are not memory unsafe but make the term
     /// ill-formed.
     pub fn mk_unchecked(&mut self, op: OpIdx, args: &[TermIdx]) -> TermIdx {
-        debug_assert_eq!(self.ops[op.index()].arg_sorts.len(), args.len());
+        debug_assert_eq!(self.ops.get(op.as_u32()).arg_sorts.len(), args.len());
         let h = hash_term(op, args);
         match self.find_term(h, op, args) {
             Some(t) => t,
@@ -575,7 +591,7 @@ impl TermPool {
     fn find_term(&self, h: u64, op: OpIdx, args: &[TermIdx]) -> Option<TermIdx> {
         self.term_table
             .find(h, |i| {
-                let t = &self.terms[i as usize];
+                let t = self.terms.get(i);
                 t.op == op && self.args_of(t) == args
             })
             .map(TermIdx::from_u32)
@@ -583,11 +599,11 @@ impl TermPool {
 
     #[inline]
     fn args_of(&self, t: &Term) -> &[TermIdx] {
-        &self.args[t.args_start as usize..(t.args_start + t.args_len) as usize]
+        self.args.slice(t.args_start, t.args_len as usize)
     }
 
     fn insert_term(&mut self, h: u64, op: OpIdx, args: &[TermIdx]) -> TermIdx {
-        let od = &self.ops[op.index()];
+        let od = self.ops.get(op.as_u32());
         let mut loose = match od.var_index {
             Some(n) => u32::try_from(n + 1).expect("de Bruijn index too large"),
             None => 0,
@@ -598,7 +614,7 @@ impl TermPool {
             None => 0,
         };
         for (i, a) in args.iter().enumerate() {
-            let t = &self.terms[a.index()];
+            let t = self.terms.get(a.as_u32());
             let (l, m) = match od.bind {
                 // the variable bound here disappears, the others move one index down; the "63 and
                 // above" bit stays set
@@ -613,10 +629,8 @@ impl TermPool {
             rigid &= t.rigid;
         }
         let sort = od.result;
-        let idx = self.terms.len() as u32;
-        let args_start = self.args.len() as u32;
-        self.args.extend_from_slice(args);
-        self.terms.push(Term {
+        let args_start = self.args.push_slice(args);
+        let idx = self.terms.push(Term {
             op,
             sort,
             args_start,
@@ -627,11 +641,8 @@ impl TermPool {
         });
         let (terms, all_args) = (&self.terms, &self.args);
         self.term_table.insert(h, idx, |i| {
-            let t = &terms[i as usize];
-            hash_term(
-                t.op,
-                &all_args[t.args_start as usize..(t.args_start + t.args_len) as usize],
-            )
+            let t = terms.get(i);
+            hash_term(t.op, all_args.slice(t.args_start, t.args_len as usize))
         });
         TermIdx::from_u32(idx)
     }
@@ -645,11 +656,11 @@ impl TermPool {
         var_sort: SortIdx,
         seen: &mut HashSet<(TermIdx, u32)>,
     ) -> Result<(), LogicError> {
-        let term = &self.terms[t.index()];
+        let term = self.terms.get(t.as_u32());
         if term.loose <= depth || !seen.insert((t, depth)) {
             return Ok(());
         }
-        let od = &self.ops[term.op.index()];
+        let od = self.ops.get(term.op.as_u32());
         if let Some(n) = od.var_index {
             // `loose > depth` means n >= depth.
             // TODO: relax the equality to subsorts if bound variables may be instantiated with
@@ -730,7 +741,7 @@ impl TermPool {
                 Some(GenArg::Const(_)) => false,
             },
             SortPat::Inst { decl, args } => {
-                let sd = &self.sorts[s.index()];
+                let sd = self.sorts.get(s.as_u32());
                 let target = if sd.decl == *decl {
                     Some(s)
                 } else if exact {
@@ -739,10 +750,10 @@ impl TermPool {
                     sd.ancestors
                         .iter()
                         .copied()
-                        .find(|a| self.sorts[a.index()].decl == *decl)
+                        .find(|a| self.sorts.get(a.as_u32()).decl == *decl)
                 };
                 let Some(t) = target else { return false };
-                let sargs = &self.sorts[t.index()].args;
+                let sargs = &self.sorts.get(t.as_u32()).args;
                 if sargs.len() != args.len() {
                     return false;
                 }
@@ -771,27 +782,131 @@ impl TermPool {
     /// Remembers the current extent of the pool.
     pub fn checkpoint(&self) -> Checkpoint {
         Checkpoint {
-            sorts: self.sorts.len(),
-            ops: self.ops.len(),
-            terms: self.terms.len(),
-            args: self.args.len(),
+            sorts: self.sorts.next(),
+            ops: self.ops.next(),
+            terms: self.terms.next(),
+            args: self.args.next(),
         }
     }
 
     /// Drops everything created after `cp`. All indices created since are invalid afterwards.
-    pub fn rollback(&mut self, cp: Checkpoint) {
+    ///
+    /// Fails with [`LogicError::RollbackPastFork`], changing nothing, if the pool has been forked
+    /// (or [frozen](Self::freeze)) since the checkpoint: what was created before the fork is
+    /// shared with other pools and cannot be dropped.
+    pub fn rollback(&mut self, cp: Checkpoint) -> Result<(), LogicError> {
+        if cp.sorts < self.sorts.base()
+            || cp.ops < self.ops.base()
+            || cp.terms < self.terms.base()
+            || cp.args < self.args.base()
+        {
+            return Err(LogicError::RollbackPastFork);
+        }
         assert!(
-            cp.sorts <= self.sorts.len()
-                && cp.ops <= self.ops.len()
-                && cp.terms <= self.terms.len(),
+            cp.sorts <= self.sorts.next()
+                && cp.ops <= self.ops.next()
+                && cp.terms <= self.terms.next(),
             "checkpoint from the future"
         );
         self.sorts.truncate(cp.sorts);
         self.ops.truncate(cp.ops);
         self.terms.truncate(cp.terms);
         self.args.truncate(cp.args);
-        self.sort_table.truncate(cp.sorts as u32);
-        self.op_table.truncate(cp.ops as u32);
-        self.term_table.truncate(cp.terms as u32);
+        self.sort_table.truncate(cp.sorts);
+        self.op_table.truncate(cp.ops);
+        self.term_table.truncate(cp.terms);
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------ fork
+
+    /// Moves everything created so far into the read-only part that forks share.
+    fn seal(&mut self) {
+        self.sorts.seal();
+        self.ops.seal();
+        self.terms.seal();
+        self.args.seal();
+        let (sorts, ops, terms, args) = (&self.sorts, &self.ops, &self.terms, &self.args);
+        self.sort_table.seal(|i| {
+            let d = sorts.get(i);
+            hash_sort(d.decl, &d.args)
+        });
+        self.op_table.seal(|i| {
+            let d = ops.get(i);
+            hash_op(d.decl, &d.generics, &d.meta)
+        });
+        self.term_table.seal(|i| {
+            let t = terms.get(i);
+            hash_term(t.op, args.slice(t.args_start, t.args_len as usize))
+        });
+    }
+
+    /// The same read-only part, nothing of our own. Only valid right after [`seal`](Self::seal).
+    fn shallow_clone(&self) -> TermPool {
+        TermPool {
+            sig: self.sig.clone(),
+            sorts: self.sorts.shallow_clone(),
+            sort_table: self.sort_table.shallow_clone(),
+            ops: self.ops.shallow_clone(),
+            op_table: self.op_table.shallow_clone(),
+            terms: self.terms.shallow_clone(),
+            args: self.args.shallow_clone(),
+            term_table: self.term_table.shallow_clone(),
+            top: self.top,
+            formula: self.formula,
+            var_decl: self.var_decl,
+        }
+    }
+
+    /// Splits the pool in two: everything created so far becomes a shared read-only part, and the
+    /// returned pool and `self` continue from it independently. Cost: proportional to what was
+    /// created since the last fork, not to the size of the pool.
+    ///
+    /// Indices created before the fork mean the same in both pools. Indices created after it do
+    /// not (the same index can denote different terms), so terms of one pool must never be used
+    /// with the other. Checkpoints taken before the fork can no longer be rolled back to.
+    pub fn fork(&mut self) -> TermPool {
+        self.seal();
+        self.shallow_clone()
+    }
+
+    /// Ends the mutable life of the pool: the result can be shared between threads and read, and
+    /// [thawed](FrozenPool::thaw) any number of times.
+    pub fn freeze(mut self) -> FrozenPool {
+        self.seal();
+        FrozenPool(self)
+    }
+}
+
+/// An immutable snapshot of a pool: all its sorts, operators and terms, readable (it derefs to
+/// [`TermPool`]'s `&self` methods) and cheap to clone. [`thaw`](Self::thaw) starts a new mutable
+/// pool on top of it, without copying.
+pub struct FrozenPool(TermPool);
+
+impl FrozenPool {
+    /// A new pool that contains everything of the snapshot and can be extended.
+    pub fn thaw(&self) -> TermPool {
+        self.0.shallow_clone()
+    }
+}
+
+impl std::fmt::Debug for FrozenPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FrozenPool")
+            .field("terms", &self.0.num_terms())
+            .finish()
+    }
+}
+
+impl Clone for FrozenPool {
+    fn clone(&self) -> Self {
+        FrozenPool(self.0.shallow_clone())
+    }
+}
+
+impl std::ops::Deref for FrozenPool {
+    type Target = TermPool;
+    fn deref(&self) -> &TermPool {
+        &self.0
     }
 }

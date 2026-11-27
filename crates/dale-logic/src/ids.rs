@@ -55,3 +55,11 @@ newtype_index! {
     #[debug_format = "StepId({})"]
     pub struct StepId {}
 }
+
+newtype_index! {
+    /// A pool snapshot registered with a [`ProofTree`](crate::ProofTree): the pool that the term
+    /// indices of the nodes referring to it belong to.
+    #[orderable]
+    #[debug_format = "ViewId({})"]
+    pub struct ViewId {}
+}
