@@ -100,6 +100,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dale-strategy"
+version = "0.1.0"
+dependencies = [
+ "dale-logic",
+ "dale-theory",
+]
+
+[[package]]
 name = "dale-syn"
 version = "0.1.0"
 dependencies = [

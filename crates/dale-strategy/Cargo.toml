@@ -1,0 +1,11 @@
+[package]
+name = "dale-strategy"
+description = "Automatic proof search: best-first selection of rule applications by ruleset costs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dale-logic = { path = "../dale-logic" }
+dale-theory = { path = "../dale-theory" }
