@@ -4,13 +4,14 @@
 //! a description of what changed) and leaves the old one untouched, so every node of a proof tree
 //! keeps its sequent. A semi-sequent is an `Arc<[TermIdx]>`: an operation on one side copies only
 //! that side's list (a memcpy of a few `u32`s), and the other side is shared with the original.
-//! Operations that change nothing return the original lists without copying.
+//! Operations that change nothing return the original lists without copying. [`Sequent::edit`]
+//! does several edits at once and builds each changed side with a single allocation.
 //!
 //! Formulas are [`TermIdx`]es of one [`TermPool`], which is shared by all sequents of a proof.
 //! Since terms are hash-consed, a formula's index is its identity: equality, duplicate detection
 //! and cache keys need no wrapper object.
 
-use std::ops::Deref;
+use std::ops::{Deref, Range};
 use std::sync::Arc;
 
 use crate::error::LogicError;
@@ -116,6 +117,60 @@ impl SequentChange {
     pub fn has_changed(&self) -> bool {
         self.antecedent.has_changed() || self.succedent.has_changed()
     }
+
+    fn side_mut(&mut self, side: Side) -> &mut SemiChange {
+        match side {
+            Side::Antecedent => &mut self.antecedent,
+            Side::Succedent => &mut self.succedent,
+        }
+    }
+}
+
+/// One side's part of a [`Sequent::edit`]: replace the formula at an index by a list of formulas
+/// (inserted in order at that place; an empty list removes it), then append formulas. Formulas
+/// already present are dropped, as in [`replace_formula`](Sequent::replace_formula) and
+/// [`add_all`](Sequent::add_all).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SideEdit<'a> {
+    pub replace: Option<(usize, &'a [TermIdx])>,
+    pub add: &'a [TermIdx],
+}
+
+/// Where the formulas that a [`Sequent::edit`] put into one side are: the formulas inserted at
+/// the replaced position, and those appended at the end. Every other formula of the side was
+/// already in the old sequent.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NewFormulas {
+    pub inserted: Range<u32>,
+    pub appended: Range<u32>,
+}
+
+impl NewFormulas {
+    pub fn is_empty(&self) -> bool {
+        self.inserted.is_empty() && self.appended.is_empty()
+    }
+
+    /// The positions of the new formulas, in order.
+    pub fn positions(&self) -> impl Iterator<Item = usize> + '_ {
+        self.inserted
+            .clone()
+            .chain(self.appended.clone())
+            .map(|i| i as usize)
+    }
+}
+
+/// The result of a [`Sequent::edit`].
+#[derive(Clone, Debug)]
+pub struct Edited {
+    pub sequent: Sequent,
+    /// `[antecedent, succedent]`.
+    pub new: [NewFormulas; 2],
+}
+
+thread_local! {
+    /// Where [`Sequent::edit`] assembles a side before it is copied into its `Arc`, so that a
+    /// changed side costs one allocation.
+    static SCRATCH: std::cell::RefCell<Vec<TermIdx>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -215,7 +270,8 @@ impl Sequent {
         edit: impl FnOnce(&mut Vec<TermIdx>, &mut SemiChange) -> R,
     ) -> (SequentChange, R) {
         let old = self.semisequent(side);
-        let mut v = old.to_vec();
+        let mut v = Vec::with_capacity(old.len() + 2);
+        v.extend_from_slice(old);
         let mut change = SemiChange::default();
         let r = edit(&mut v, &mut change);
         let new = if change.has_changed() {
@@ -240,6 +296,82 @@ impl Sequent {
             },
             r,
         )
+    }
+
+    fn unchanged(&self) -> SequentChange {
+        SequentChange {
+            sequent: self.clone(),
+            antecedent: SemiChange::default(),
+            succedent: SemiChange::default(),
+        }
+    }
+
+    /// Several edits at once, at most one replacement and one list of additions per side
+    /// (`[antecedent, succedent]`). The result is the same as [`replace_formula`]
+    /// followed by [`add_all`] on each side, but each changed side is built once, with one
+    /// allocation, and an unchanged side is shared with `self`. Instead of a [`SemiChange`] it
+    /// says where the new formulas are ([`NewFormulas`]). This is what rule application uses.
+    ///
+    /// [`replace_formula`]: Self::replace_formula
+    /// [`add_all`]: Self::add_all
+    pub fn edit(&self, pool: &TermPool, edits: [SideEdit<'_>; 2]) -> Result<Edited, SequentError> {
+        for (side, e) in [Side::Antecedent, Side::Succedent].into_iter().zip(&edits) {
+            if let Some((index, new)) = e.replace {
+                self.range_check(side, index)?;
+                for &f in new {
+                    check_formula(pool, f)?;
+                }
+            }
+            for &f in e.add {
+                check_formula(pool, f)?;
+            }
+        }
+        let [ea, es] = edits;
+        let (antecedent, na) = Self::edit_one(&self.antecedent, ea);
+        let (succedent, ns) = Self::edit_one(&self.succedent, es);
+        Ok(Edited {
+            sequent: Sequent {
+                antecedent,
+                succedent,
+            },
+            new: [na, ns],
+        })
+    }
+
+    /// [`edit`](Self::edit) on one side, whose arguments were checked.
+    fn edit_one(old: &Semisequent, e: SideEdit<'_>) -> (Semisequent, NewFormulas) {
+        // a replacement by the formula itself changes nothing
+        let replace = e.replace.filter(|&(i, new)| new != [old[i]]);
+        let (at, new) = replace.unwrap_or((old.len(), &[]));
+        if replace.is_none() && e.add.iter().all(|&f| old.contains(f)) {
+            return (old.clone(), NewFormulas::default());
+        }
+        SCRATCH.with_borrow_mut(|v| {
+            v.clear();
+            v.extend_from_slice(&old[..at]);
+            let rest = old.get(at + 1..).unwrap_or(&[]);
+            for &n in new {
+                // not among the formulas kept, nor inserted already
+                if !old[..at].contains(&n) && !rest.contains(&n) && !v[at..].contains(&n) {
+                    v.push(n);
+                }
+            }
+            let inserted = at as u32..v.len() as u32;
+            v.extend_from_slice(rest);
+            let start = v.len();
+            for &f in e.add {
+                if !v.contains(&f) {
+                    v.push(f);
+                }
+            }
+            let appended = start as u32..v.len() as u32;
+            if v[..] == old[..] {
+                // e.g. `x` replaced by `x, y` where `y` is already there
+                return (old.clone(), NewFormulas::default());
+            }
+            let n = NewFormulas { inserted, appended };
+            (Semisequent(Arc::from(&v[..])), n)
+        })
     }
 
     fn range_check(&self, side: Side, index: usize) -> Result<(), SequentError> {
@@ -269,6 +401,13 @@ impl Sequent {
     ) -> Result<SequentChange, SequentError> {
         for &f in fs {
             check_formula(pool, f)?;
+        }
+        let present = self.semisequent(side);
+        if fs.iter().all(|&f| present.contains(f)) {
+            // nothing to add: no copy
+            let mut change = self.unchanged();
+            change.side_mut(side).rejected.extend_from_slice(fs);
+            return Ok(change);
         }
         Ok(self
             .edit_side(side, |v, c| {
@@ -307,12 +446,12 @@ impl Sequent {
         for &f in new {
             check_formula(pool, f)?;
         }
+        if new == [self.semisequent(side)[index]] {
+            return Ok(self.unchanged());
+        }
         Ok(self
             .edit_side(side, |v, c| {
                 let old = v[index];
-                if new == [old] {
-                    return;
-                }
                 v.remove(index);
                 let mut at = index;
                 let mut replaced = false;

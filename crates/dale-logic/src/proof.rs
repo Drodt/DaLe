@@ -32,7 +32,7 @@ use crate::index::RuleId;
 use crate::matcher::Instantiation;
 use crate::pool::FrozenPool;
 use crate::pos::PosInOccurrence;
-use crate::sequent::Sequent;
+use crate::sequent::{NewFormulas, Sequent};
 
 /// How a rule was applied: enough to display, check or replay the step.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,6 +51,10 @@ pub struct Application {
 pub struct Branch {
     pub label: Option<Symbol>,
     pub sequent: Sequent,
+    /// Where the formulas are that the step put into `sequent` (`[antecedent, succedent]`), if
+    /// known: [`apply_rule`](crate::apply_rule) fills it in, so that a strategy only has to look
+    /// at the new formulas. The proof tree does not keep it.
+    pub new_formulas: Option<[NewFormulas; 2]>,
 }
 
 impl Branch {
@@ -58,6 +62,7 @@ impl Branch {
         Self {
             label: None,
             sequent,
+            new_formulas: None,
         }
     }
 }

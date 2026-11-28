@@ -648,6 +648,132 @@ mod sequents {
         assert_eq!(c.sequent.succedent().as_slice(), &[p]);
         assert_eq!(c.sequent.antecedent().as_slice(), &[pp]);
     }
+
+    fn same_list(a: &Semisequent, b: &Semisequent) -> bool {
+        std::ptr::eq(a.as_slice(), b.as_slice())
+    }
+
+    #[test]
+    fn edits_that_change_nothing_do_not_copy() {
+        let mut f = fx();
+        let (p, pp, ppp) = atoms(&mut f);
+        let s = Sequent::from_formulas(&f.pool, &[p, pp], &[ppp]).unwrap();
+        let c = s.add_all(&f.pool, Side::Antecedent, &[]).unwrap();
+        assert!(same_list(c.sequent.antecedent(), s.antecedent()));
+        let c = s.add_all(&f.pool, Side::Antecedent, &[pp, p]).unwrap();
+        assert!(same_list(c.sequent.antecedent(), s.antecedent()));
+        assert_eq!(c.antecedent.rejected, [pp, p]);
+        let c = s
+            .replace_formula(&f.pool, Side::Antecedent, 1, &[pp])
+            .unwrap();
+        assert!(!c.has_changed() && same_list(c.sequent.antecedent(), s.antecedent()));
+        // `edit`: an unchanged side is shared, a changed one is new
+        let e = s
+            .edit(
+                &f.pool,
+                [
+                    SideEdit {
+                        replace: Some((0, &[p])),
+                        add: &[pp],
+                    },
+                    SideEdit {
+                        replace: None,
+                        add: &[p],
+                    },
+                ],
+            )
+            .unwrap();
+        assert!(same_list(e.sequent.antecedent(), s.antecedent()));
+        assert_eq!(e.new[0], NewFormulas::default());
+        assert_eq!(e.sequent.succedent().as_slice(), &[ppp, p]);
+        assert_eq!(e.new[1].positions().collect::<Vec<_>>(), [1]);
+        // bad arguments are refused as by the single operations
+        assert!(
+            s.edit(
+                &f.pool,
+                [
+                    SideEdit {
+                        replace: Some((2, &[])),
+                        add: &[]
+                    },
+                    SideEdit::default()
+                ]
+            )
+            .is_err()
+        );
+    }
+
+    /// `edit` agrees with `replace_formula` followed by `add_all`, and reports the new formulas.
+    #[test]
+    fn edit_agrees_with_replace_and_add() {
+        let mut f = fx();
+        let (p, pp, ppp) = atoms(&mut f);
+        let q = f.and(ppp, p);
+        let r = f.and(q, pp);
+        let fs = [p, pp, ppp, q, r];
+        let mut rng = 0x2545_F491_4F6C_DD1Du64;
+        fn next(rng: &mut u64, n: usize) -> usize {
+            *rng ^= *rng << 13;
+            *rng ^= *rng >> 7;
+            *rng ^= *rng << 17;
+            (*rng % n as u64) as usize
+        }
+        fn pick(rng: &mut u64, fs: &[TermIdx], k: usize) -> Vec<TermIdx> {
+            (0..k).map(|_| fs[next(rng, fs.len())]).collect()
+        }
+        for _ in 0..2000 {
+            let (a, b) = (pick(&mut rng, &fs, 3), pick(&mut rng, &fs, 2));
+            let s = Sequent::from_formulas(&f.pool, &a, &b).unwrap();
+            let mut lists = Vec::new();
+            for side in [Side::Antecedent, Side::Succedent] {
+                let len = s.semisequent(side).len();
+                let replace = if len > 0 && next(&mut rng, 3) > 0 {
+                    let k = next(&mut rng, 3);
+                    Some((next(&mut rng, len), pick(&mut rng, &fs, k)))
+                } else {
+                    None
+                };
+                let k = next(&mut rng, 3);
+                lists.push((side, replace, pick(&mut rng, &fs, k)));
+            }
+            let edits: Vec<SideEdit> = lists
+                .iter()
+                .map(|(_, r, add)| SideEdit {
+                    replace: r.as_ref().map(|(i, v)| (*i, &v[..])),
+                    add,
+                })
+                .collect();
+            let e = s.edit(&f.pool, [edits[0], edits[1]]).unwrap();
+            let mut t = s.clone();
+            for (side, r, add) in &lists {
+                if let Some((i, v)) = r {
+                    t = t.replace_formula(&f.pool, *side, *i, v).unwrap().sequent;
+                }
+                t = t.add_all(&f.pool, *side, add).unwrap().sequent;
+            }
+            assert_eq!(e.sequent, t, "{lists:?}");
+            for (k, (side, _, _)) in lists.iter().enumerate() {
+                let old = s.semisequent(*side);
+                let new = e.sequent.semisequent(*side);
+                let mut fresh: Vec<TermIdx> = e.new[k].positions().map(|i| new[i]).collect();
+                fresh.sort();
+                let mut expect: Vec<TermIdx> =
+                    new.iter().copied().filter(|x| !old.contains(*x)).collect();
+                expect.sort();
+                // a replaced formula that comes back is new where it is inserted
+                assert!(expect.iter().all(|x| fresh.contains(x)), "{lists:?}");
+                assert!(
+                    fresh
+                        .iter()
+                        .all(|&x| !old.contains(x) || lists[k].1.is_some()),
+                    "{lists:?}"
+                );
+                if old.as_slice() == new.as_slice() {
+                    assert!(e.new[k].is_empty() && same_list(old, new));
+                }
+            }
+        }
+    }
 }
 
 mod matching {
@@ -1085,6 +1211,7 @@ mod proof_tree {
                     Branch {
                         label: Some(name),
                         sequent: left.clone(),
+                        new_formulas: None,
                     },
                     Branch::new(Sequent::new()),
                 ],
@@ -1871,6 +1998,13 @@ mod applying {
         .unwrap();
         assert_eq!(applied.branches.len(), 2);
         assert_eq!(applied.branches[0].label, Some(first));
+        // the new formulas of each branch are reported: `p`, `q` in place of `p & q`
+        for (br, x) in applied.branches.iter().zip([p, q]) {
+            let new = br.new_formulas.as_ref().unwrap();
+            assert!(new[0].is_empty());
+            let succ = br.sequent.succedent();
+            assert_eq!(new[1].positions().map(|i| succ[i]).collect::<Vec<_>>(), [x]);
+        }
         assert_eq!(applied.branches[0].sequent.succedent().as_slice(), &[p]);
         assert_eq!(applied.branches[1].sequent.succedent().as_slice(), &[q]);
         assert_eq!(applied.branches[1].sequent.antecedent().as_slice(), &[p]);

@@ -26,7 +26,7 @@ use crate::pattern::{Find, GenTmpl, Replace, Rule, SvId, TmplId, TmplNode};
 use crate::pool::TermPool;
 use crate::pos::{PosInOccurrence, PosInTerm, SortCheck};
 use crate::proof::{Application, Branch};
-use crate::sequent::{Sequent, SequentError, Side};
+use crate::sequent::{Sequent, SequentError, Side, SideEdit};
 use crate::sig::binds_arg;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,12 +102,23 @@ pub fn apply_rule(
         .collect();
     let mut branches = Vec::with_capacity(rule.goals().len());
     for g in rule.goals() {
-        let mut s = seq.clone();
+        // what replaces the find, per side (`[antecedent, succedent]`)
+        let mut replaced: [Option<(usize, Insts)>; 2] = [None, None];
         match &g.replace {
             Replace::Nothing => {}
             Replace::Term(t) => {
                 let new = inst(pool, rule, b, *t, 0, checks)?;
-                s = s.replace_subterm(pool, &find_pos[0], new, checks)?.sequent;
+                let at = &find_pos[0];
+                let f = seq
+                    .get(at.side, at.index)
+                    .ok_or(SequentError::IndexOutOfRange {
+                        side: at.side,
+                        index: at.index,
+                    })?;
+                let nf = pool
+                    .replace_at(f, at.term_pos.as_slice(), new, checks)
+                    .map_err(SequentError::from)?;
+                replaced[side_index(at.side)] = Some((at.index, Insts::One(nf)));
             }
             Replace::Sequent { ante, succ } => {
                 let Find::Sequent {
@@ -126,17 +137,23 @@ pub fn apply_rule(
                     }
                     let at = parts.next().ok_or(ApplyError::BadMatch)?;
                     let new = inst_all(pool, rule, b, list, checks)?;
-                    s = s.replace_formula(pool, side, at.index, &new)?.sequent;
+                    replaced[side_index(side)] = Some((at.index, new));
                 }
             }
         }
         let ante = inst_all(pool, rule, b, &g.add_ante, checks)?;
-        s = s.add_all(pool, Side::Antecedent, &ante)?.sequent;
         let succ = inst_all(pool, rule, b, &g.add_succ, checks)?;
-        s = s.add_all(pool, Side::Succedent, &succ)?.sequent;
+        let e = seq.edit(
+            pool,
+            [
+                side_edit(&replaced[0], &ante),
+                side_edit(&replaced[1], &succ),
+            ],
+        )?;
         branches.push(Branch {
             label: g.label,
-            sequent: s,
+            sequent: e.sequent,
+            new_formulas: Some(e.new),
         });
     }
     Ok(Applied {
@@ -150,16 +167,35 @@ pub fn apply_rule(
     })
 }
 
+/// Instantiated templates. Most lists have at most one entry, which then needs no allocation.
+enum Insts {
+    One(TermIdx),
+    Many(Vec<TermIdx>),
+}
+
+impl Insts {
+    fn as_slice(&self) -> &[TermIdx] {
+        match self {
+            Insts::One(t) => std::slice::from_ref(t),
+            Insts::Many(v) => v,
+        }
+    }
+}
+
 fn inst_all(
     pool: &mut TermPool,
     rule: &Rule,
     b: &Bindings,
     ts: &[TmplId],
     checks: SortCheck,
-) -> Result<Vec<TermIdx>, ApplyError> {
+) -> Result<Insts, ApplyError> {
+    if let [t] = ts {
+        return Ok(Insts::One(inst(pool, rule, b, *t, 0, checks)?));
+    }
     ts.iter()
         .map(|&t| inst(pool, rule, b, t, 0, checks))
-        .collect()
+        .collect::<Result<_, _>>()
+        .map(Insts::Many)
 }
 
 /// Builds the term of a template node below `depth` binders of the template.
@@ -192,13 +228,26 @@ fn inst(
             args,
             bind_mask,
         } => {
-            let mut a = Vec::with_capacity(args.len());
+            // the arguments; up to `SMALL` of them on the stack
+            const SMALL: usize = 4;
+            let mut small = [TermIdx::from_u32(0); SMALL];
+            let mut large = Vec::new();
             for (i, &x) in args.iter().enumerate() {
                 let d = depth + binds_arg(*bind_mask, i) as u32;
-                a.push(inst(pool, rule, b, x, d, checks)?);
+                let t = inst(pool, rule, b, x, d, checks)?;
+                if args.len() <= SMALL {
+                    small[i] = t;
+                } else {
+                    large.push(t);
+                }
             }
+            let a: &[TermIdx] = if args.len() <= SMALL {
+                &small[..args.len()]
+            } else {
+                &large
+            };
             if gens.iter().any(|g| matches!(g, GenTmpl::Infer)) {
-                return Ok(pool.mk_inferred(*decl, meta, &a)?);
+                return Ok(pool.mk_inferred(*decl, meta, a)?);
             }
             let mut ga = Vec::with_capacity(gens.len());
             for g in gens.iter() {
@@ -210,9 +259,23 @@ fn inst(
             }
             let op = pool.mk_op(*decl, &ga, meta)?;
             Ok(match checks {
-                SortCheck::Enforce => pool.mk(op, &a)?,
-                SortCheck::Skip => pool.mk_unchecked(op, &a),
+                SortCheck::Enforce => pool.mk(op, a)?,
+                SortCheck::Skip => pool.mk_unchecked(op, a),
             })
         }
+    }
+}
+
+fn side_index(side: Side) -> usize {
+    match side {
+        Side::Antecedent => 0,
+        Side::Succedent => 1,
+    }
+}
+
+fn side_edit<'a>(replaced: &'a Option<(usize, Insts)>, add: &'a Insts) -> SideEdit<'a> {
+    SideEdit {
+        replace: replaced.as_ref().map(|(i, v)| (*i, v.as_slice())),
+        add: add.as_slice(),
     }
 }

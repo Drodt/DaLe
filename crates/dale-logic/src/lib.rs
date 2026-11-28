@@ -54,7 +54,10 @@ pub use pattern::{GenTmpl, GoalTemplate, Replace, TmplId, TmplNode};
 pub use pool::{Checkpoint, FrozenPool, GenArg, OpData, SortData, Term, TermPool};
 pub use pos::{PosInOccurrence, PosInTerm, SortCheck};
 pub use proof::{Application, Branch, Node, NodeRange, ProofError, ProofTree, Step};
-pub use sequent::{SemiChange, Semisequent, Sequent, SequentChange, SequentError, Side};
+pub use sequent::{
+    Edited, NewFormulas, SemiChange, Semisequent, Sequent, SequentChange, SequentError, Side,
+    SideEdit,
+};
 pub use sig::{
     Binding, GenArgPat, GenKind, GenParam, MetaKind, MetaValue, OpDecl, OpFlags, OpKind, SigError,
     Signature, SignatureBuilder, SortDecl, SortKind, SortPat, binds_arg,
