@@ -26,11 +26,15 @@ pub struct Sort<'ir> {
     pub modifiers: SortModifiers,
     pub args: &'ir [GenArg<'ir>],
     pub extends: Option<&'ir Sort<'ir>>,
+    /// A sort this checker cannot determine: a generic parameter whose argument was omitted (it
+    /// is inferred when the term is built), or the sort of a number literal. It is compatible
+    /// with every sort; `dale-logic` checks such terms exactly when it builds them.
+    pub unknown: bool,
 }
 
 impl<'ir> Sort<'ir> {
     pub fn sub_sort(&self, s: &Sort<'ir>) -> bool {
-        if s.modifiers.top || self == s {
+        if s.modifiers.top || self.same(s) {
             return true;
         }
         match self.extends {
@@ -52,6 +56,37 @@ impl<'ir> Sort<'ir> {
             args,
             modifiers,
             extends,
+            unknown: false,
+        }
+    }
+
+    /// Equal, where an unknown sort (also as a generic argument) is equal to every sort.
+    fn same(&self, s: &Sort<'ir>) -> bool {
+        if self.unknown || s.unknown {
+            return true;
+        }
+        self.def_id == s.def_id
+            && self.args.len() == s.args.len()
+            && self.args.iter().zip(s.args).all(|(a, b)| match (a, b) {
+                (GenArg::Sort(a), GenArg::Sort(b)) => a.same(b),
+                (a, b) => a == b,
+            })
+    }
+
+    /// An [unknown](Self::unknown) sort; `def_id` is only for messages.
+    pub fn unknown(def_id: DefId) -> Self {
+        Self {
+            unknown: true,
+            ..Self::new(
+                def_id,
+                &[],
+                SortModifiers {
+                    formula: false,
+                    meta: false,
+                    top: false,
+                },
+                None,
+            )
         }
     }
 }
@@ -264,7 +299,12 @@ impl<'ir> Checker<'ir> {
         let (path, args, subs) = match t.kind {
             TermKind::Path(path, generic_args) => (path, generic_args, None),
             TermKind::Call(path, generic_args, terms) => (path, generic_args, Some(terms)),
-            TermKind::Num(_) => unreachable!("number literals only occur in problems"),
+            TermKind::Num(_) => {
+                // a meta argument (`var<int>(0)`); its sort is not a sort of the theory
+                let s = Sort::unknown(ir::FILE_DEF_ID.to_def_id());
+                self.ir_id_to_sort.insert(t.id, s);
+                return s;
+            }
         };
         let Res::Def(_, def_id) = path.res else {
             panic!("{t:?}")
@@ -295,8 +335,16 @@ impl<'ir> Checker<'ir> {
             d => panic!("Expected operator, got {d:?}"),
         };
         let args = self.convert_args(args);
+        // the sorts of the declaration with the generic arguments substituted; omitted generic
+        // arguments are inferred later, their parameters have an unknown sort here
+        let mut subst = Vec::new();
         if let Some(params) = params {
-            self.check_generic_args(t.id, def_id, args, params);
+            if !args.is_empty() {
+                self.check_generic_args(t.id, def_id, args, params);
+            }
+            if args.len() == params.len() {
+                subst.extend(params.iter().map(|p| p.id).zip(args.iter().copied()));
+            }
         }
 
         match (subs, arg_sort_refs) {
@@ -320,7 +368,7 @@ impl<'ir> Checker<'ir> {
                 }
                 for (idx, (s, r)) in subs.iter().zip(srs.iter()).enumerate() {
                     let ts = self.term_sort(s);
-                    let rs = self.ref_to_sort(r);
+                    let rs = self.ref_to_sort_in(r, &subst);
                     if !ts.sub_sort(&rs) {
                         self.errors
                             .push(CheckErr::CallArgNotSubsort(t.id, def_id, idx));
@@ -330,7 +378,7 @@ impl<'ir> Checker<'ir> {
         }
 
         let sort = match sort_ref {
-            Some(r) => self.ref_to_sort(r),
+            Some(r) => self.ref_to_sort_in(r, &subst),
             // a predicate: a formula
             None => self.formula(def_id),
         };
@@ -395,11 +443,28 @@ impl<'ir> Checker<'ir> {
     }
 
     fn ref_to_sort(&mut self, r: &'ir SortRef<'ir>) -> Sort<'ir> {
-        let res = r.path.res;
-        let Res::Def(DefKind::Sort, def_id) = res else {
-            panic!("Encountered error")
+        self.ref_to_sort_in(r, &[])
+    }
+
+    /// The sort `r` names, with the generic parameters in `subst` replaced by their arguments.
+    /// Other generic parameters (an omitted argument, or a parameter of the declaration that is
+    /// being checked) are [unknown](Sort::unknown).
+    fn ref_to_sort_in(
+        &mut self,
+        r: &'ir SortRef<'ir>,
+        subst: &[(DefId, GenArg<'ir>)],
+    ) -> Sort<'ir> {
+        let def_id = match r.path.res {
+            Res::Def(DefKind::Sort, def_id) => def_id,
+            Res::Def(DefKind::SortParam, p) => {
+                return match subst.iter().find(|(q, _)| *q == p) {
+                    Some((_, GenArg::Sort(s))) => *s,
+                    _ => Sort::unknown(p),
+                };
+            }
+            _ => panic!("Encountered error"),
         };
-        let args = self.convert_args(r.args);
+        let args = self.convert_args_in(r.args, subst);
         if let Some(e) = self.def_id_args_to_sort.get(&(def_id, args)) {
             return *e;
         }
@@ -410,7 +475,17 @@ impl<'ir> Checker<'ir> {
                 .push(CheckErr::IncorrentNumberOfGenArgs(r.id, def_id));
         }
         let extends = if let Some((_, e)) = decl.extends {
-            let sup = self.ref_to_sort(e);
+            // `NeSeq<E> \extends Seq<E>`: the supersort of `NeSeq<int>` is `Seq<int>`
+            let own: Vec<_> = if args.len() == decl.params.len() {
+                decl.params
+                    .iter()
+                    .map(|p| p.id)
+                    .zip(args.iter().copied())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let sup = self.ref_to_sort_in(e, &own);
             Some(&*self.arena.alloc(sup))
         } else {
             None
@@ -422,8 +497,16 @@ impl<'ir> Checker<'ir> {
     }
 
     fn convert_args(&mut self, args: &'ir [GenericArg<'ir>]) -> &'ir [GenArg<'ir>] {
+        self.convert_args_in(args, &[])
+    }
+
+    fn convert_args_in(
+        &mut self,
+        args: &'ir [GenericArg<'ir>],
+        subst: &[(DefId, GenArg<'ir>)],
+    ) -> &'ir [GenArg<'ir>] {
         self.arena.alloc_from_iter(args.iter().map(|a| match a {
-            GenericArg::Sort(sort_ref) => GenArg::Sort(self.ref_to_sort(sort_ref)),
+            GenericArg::Sort(sort_ref) => GenArg::Sort(self.ref_to_sort_in(sort_ref, subst)),
             GenericArg::Const(term, _) => GenArg::Term(**term),
         }))
     }
@@ -524,14 +607,6 @@ impl<'ir> Visit<'ir> for Checker<'ir> {
 
     fn visit_rule_set_ref(&mut self, x: &'ir RuleSetRef<'ir>) {
         self.check_rule_set_ref(x);
-    }
-
-    fn visit_item_kind(&mut self, x: &'ir ItemKind<'ir>) {
-        // The terms of a problem use explicit generics and de Bruijn literals, which this checker
-        // does not know; they are checked when they are built (in `dale-theory`).
-        if !matches!(x, ItemKind::Problem(_)) {
-            ir::visit::visit_item_kind(self, x);
-        }
     }
 
     fn visit_item_id(&mut self, x: &'ir ir::ItemId) {

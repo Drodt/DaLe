@@ -538,3 +538,37 @@ fn predicates_without_a_formula_sort() {
         .to_string();
     assert!(e.contains("Missing formula sort"), "{e}");
 }
+
+/// The front end's checker substitutes explicit generic arguments (also in supersorts) and leaves
+/// omitted ones to `dale-logic`, so generic operators work in rules and problems.
+#[test]
+fn generic_operators_are_checked() {
+    let theory = r#"
+\theory G {
+  \sorts { \top Any; \formula Formula; int; nat \extends int; Seq<E>; NeSeq<E> \extends Seq<E>; }
+  \operators { \rigid ite<S>(Formula, S, S) -> S; }
+  \functions { \rigid zero -> nat; \rigid single<E>(E) -> NeSeq<E>; }
+  \predicates { le(int, int); isEmpty<E>(Seq<E>); p; }
+  \rules {
+    iteSame { \schemaVar b: Formula; \schemaVar x: int; \find(ite(b, x, x)) \replacewith(x) }
+  }
+}
+"#;
+    let ok = format!(
+        "{theory}\n\\problem {{ \\use G::*; ==> le(ite<int>(p, zero, zero), zero), isEmpty<nat>(single<nat>(zero)) }}"
+    );
+    let th = Theory::load_text("G.theokey", ok).unwrap_or_else(|e| panic!("{e}"));
+    assert!(th.skipped.is_empty(), "{:?}", th.skipped);
+    assert!(th.rule_named("iteSame").is_some());
+    // `ite<Formula>` where an int is expected, found by the checker
+    let bad = format!("{theory}\n\\problem {{ \\use G::*; ==> le(ite<Formula>(p, p, p), zero) }}");
+    let m = Theory::load_text("G.theokey", bad).unwrap_err().to_string();
+    assert!(
+        m.contains("error[check]") && m.contains("not subsort"),
+        "{m}"
+    );
+    // `Seq<int>` is no `Seq<nat>`
+    let bad = format!("{theory}\n\\problem {{ \\use G::*; ==> isEmpty<nat>(single<int>(zero)) }}");
+    let m = Theory::load_text("G.theokey", bad).unwrap_err().to_string();
+    assert!(m.contains("error[check]"), "{m}");
+}

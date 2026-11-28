@@ -1774,6 +1774,43 @@ mod applying {
     }
 
     #[test]
+    fn bound_and_ground_assumes_are_compared_by_index() {
+        // `close`: \assumes(x ==>) \find(==> x); and `\assumes(p ==>) \find(==> x)`
+        let mut f = fx();
+        let (p, three, zero) = (f.c(f.p), f.c(f.three), f.c(f.zero));
+        let q = f.pool.mk_inferred(f.le, &[], &[three, zero]).unwrap();
+        let pq = f.and(p, q);
+        let mut r = rb(&mut f, "close");
+        let x = r.declare_sv(f.names.intern("x"), SvKind::Formula, SortReq::Any);
+        let px = r.sv(x).unwrap();
+        r.find_sequent(None, Some(px));
+        r.assume(Side::Antecedent, px);
+        let close = r.finish().unwrap();
+        let mut r = rb(&mut f, "ground");
+        let x = r.declare_sv(f.names.intern("x"), SvKind::Formula, SortReq::Any);
+        let px = r.sv(x).unwrap();
+        r.find_sequent(None, Some(px));
+        let gp = r.ground(p);
+        r.assume(Side::Antecedent, gp);
+        let ground = r.finish().unwrap();
+        let seq = Sequent::from_formulas(&f.pool, &[pq, q, p], &[p, pq]).unwrap();
+        let all = |rule: &Rule, at: usize| {
+            let mut b = Bindings::new(rule);
+            let mut out = Vec::new();
+            let _ = match_sequent_at(&f.pool, rule, &seq, Side::Succedent, at, &mut b, &mut |m| {
+                out.push(m.matched().to_vec());
+                ControlFlow::Continue(())
+            });
+            out
+        };
+        let (a, s) = (Side::Antecedent, Side::Succedent);
+        assert_eq!(all(&close, 0), vec![vec![(s, 0), (a, 2)]]);
+        assert_eq!(all(&close, 1), vec![vec![(s, 1), (a, 0)]]);
+        assert_eq!(all(&ground, 0), vec![vec![(s, 0), (a, 2)]]);
+        assert_eq!(all(&ground, 1), vec![vec![(s, 1), (a, 2)]]);
+    }
+
+    #[test]
     fn sequent_rules_branch_and_close() {
         let mut f = fx();
         let (p, three, zero) = (f.c(f.p), f.c(f.three), f.c(f.zero));

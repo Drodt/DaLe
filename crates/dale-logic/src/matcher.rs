@@ -299,11 +299,25 @@ impl Ctx<'_> {
             Some(i) => i..(i + 1).min(formulas.len()),
             None => 0..formulas.len(),
         };
+        // A pattern that can only match one term (a ground pattern, or a schema variable that is
+        // already bound at the top level, as `b` of `close` once its `\find` has matched) is
+        // compared by index instead of being matched against every formula of the side.
+        let only = match self.rule.node(pat) {
+            PatNode::Ground(g) => Some(*g),
+            PatNode::Sv(sv) => match b.svs[sv.0 as usize] {
+                Some((t, 0)) => Some(t),
+                _ => None,
+            },
+            PatNode::App { .. } => None,
+        };
         for i in range {
             if skip == Some(i) {
                 continue;
             }
             let f = formulas[i];
+            if only.is_some_and(|t| t != f) {
+                continue;
+            }
             let mark = b.mark();
             b.matched.push((side, i as u32));
             let r = if self.m(b, pat, f, 0) {
