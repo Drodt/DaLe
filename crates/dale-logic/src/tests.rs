@@ -32,23 +32,23 @@ fn fx() -> Fx {
              name: &str,
              kind: SortKind,
              params: Vec<GenParam>,
-             extends: Vec<SortPat>| {
+             extends: Option<SortPat>| {
         let mut d = SortDecl::new(n.intern(name));
         d.kind = kind;
         d.params = params;
         d.extends = extends;
         b.add_sort(d).unwrap()
     };
-    let any = s(&mut b, &mut n, "Any", SortKind::Top, vec![], vec![]);
-    let form = s(&mut b, &mut n, "Formula", SortKind::Formula, vec![], vec![]);
-    let int = s(&mut b, &mut n, "int", SortKind::Normal, vec![], vec![]);
+    let any = s(&mut b, &mut n, "Any", SortKind::Top, vec![], None);
+    let form = s(&mut b, &mut n, "Formula", SortKind::Formula, vec![], None);
+    let int = s(&mut b, &mut n, "int", SortKind::Normal, vec![], None);
     let nat = s(
         &mut b,
         &mut n,
         "nat",
         SortKind::Normal,
         vec![],
-        vec![SortPat::simple(int)],
+        Some(SortPat::simple(int)),
     );
     let e = n.intern("E");
     let seq = s(
@@ -60,7 +60,7 @@ fn fx() -> Fx {
             name: e,
             kind: GenKind::Sort,
         }],
-        vec![],
+        None,
     );
     let nn = n.intern("N");
     let array = s(
@@ -78,7 +78,7 @@ fn fx() -> Fx {
                 kind: GenKind::Const(SortPat::simple(int)),
             },
         ],
-        vec![],
+        None,
     );
     let f = SortPat::simple(form);
     let op = |b: &mut SignatureBuilder, d: OpDecl| b.add_op(d).unwrap();
@@ -452,7 +452,7 @@ fn signature_errors() {
     assert_eq!(b.add_sort(top).unwrap_err(), SigError::TopRedeclared);
     // forward reference
     let mut d = SortDecl::new(n.intern("x"));
-    d.extends = vec![SortPat::simple(SortDeclId::from_u32(7))];
+    d.extends = Some(SortPat::simple(SortDeclId::from_u32(7)));
     assert!(matches!(b.add_sort(d), Err(SigError::BadSortPattern(_))));
     // malformed bound variable
     let mut d = OpDecl::new(

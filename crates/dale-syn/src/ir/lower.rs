@@ -413,12 +413,10 @@ impl<'ir> LowerCtx<'ir> {
         let params = self
             .arena
             .alloc_from_iter(s.params.iter().map(|p| self.lower_generic_param(p)));
-        let extends: Option<(Span, &[SortRef<'ir>])> = s.extends.as_ref().map(|(sp, e)| {
+        let extends: Option<(Span, &SortRef<'ir>)> = s.extends.as_ref().map(|(sp, e)| {
             (
                 self.lower_span(sp),
-                self.arena
-                    .alloc_from_iter(e.iter().map(|s| self.lower_sort_ref(s)))
-                    as &[SortRef],
+                &*self.arena.alloc(self.lower_sort_ref(e)),
             )
         });
         let sd = SortDecl {

@@ -323,28 +323,20 @@ Sort: Sort = {
     },
 }
 
-// TODO: syntax for supersorts (`nat \extends int;`); `SortDecl::extends` is always `None` so
-// far, so no subsort can be declared in a theory file.
+// `name;`, `name<params>;`, optionally with one supersort: `nat \\extends int;`.
 SortDecl: SortDecl = {
-    <start: @L> <modifiers:SortModifiers> <name:Ident> "<" <params:Comma<GenericParam>> ">" ";" <end: @R> =>
+    <start: @L> <modifiers:SortModifiers> <name:Ident> <params:("<" <Comma<GenericParam>> ">")?> <extends:SortExtends?> ";" <end: @R> =>
     SortDecl {
         id: ctx.id(),
         modifiers,
         name,
         span: ctx.span(start, end),
-        params,
-        extends: None
-    },
-    <start: @L> <modifiers:SortModifiers> <name:Ident> ";" <end: @R> =>
-    SortDecl {
-        id: ctx.id(),
-        modifiers,
-        name,
-        span: ctx.span(start, end),
-        params: vec![],
-        extends: None
+        params: params.unwrap_or_default(),
+        extends
     }
 }
+
+SortExtends: (Span, Sort) = <start: @L> "\\extends" <s:Sort> <end: @R> => (ctx.span(start, end), s);
 
 SortModifiers: SortModifiers = {
     <formula:"\\formula"?> <meta:"\\meta"?> <top:"\\top"?> => SortModifiers {

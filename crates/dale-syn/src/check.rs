@@ -25,7 +25,7 @@ pub struct Sort<'ir> {
     pub def_id: DefId,
     pub modifiers: SortModifiers,
     pub args: &'ir [GenArg<'ir>],
-    pub extends: Option<&'ir [Sort<'ir>]>,
+    pub extends: Option<&'ir Sort<'ir>>,
 }
 
 impl<'ir> Sort<'ir> {
@@ -34,7 +34,7 @@ impl<'ir> Sort<'ir> {
             return true;
         }
         match self.extends {
-            Some(e) => e.iter().any(|sort| sort.sub_sort(s)),
+            Some(e) => e.sub_sort(s),
             None => false,
         }
     }
@@ -45,7 +45,7 @@ impl<'ir> Sort<'ir> {
         def_id: DefId,
         args: &'ir [GenArg<'ir>],
         modifiers: SortModifiers,
-        extends: Option<&'ir [Sort<'ir>]>,
+        extends: Option<&'ir Sort<'ir>>,
     ) -> Self {
         Self {
             def_id,
@@ -329,9 +329,43 @@ impl<'ir> Checker<'ir> {
             }
         }
 
-        let sort = self.ref_to_sort(sort_ref.unwrap());
+        let sort = match sort_ref {
+            Some(r) => self.ref_to_sort(r),
+            // a predicate: a formula
+            None => self.formula(def_id),
+        };
         self.ir_id_to_sort.insert(t.id, sort);
         sort
+    }
+
+    /// The formula sort, the sort of a term of the predicate `pred`. Without a formula sort this
+    /// reports [`CheckErr::MissingFormulaSort`] (once) and returns a placeholder that is
+    /// compatible with every sort, to avoid follow-up errors.
+    fn formula(&mut self, pred: DefId) -> Sort<'ir> {
+        let found = self.formula_sort.or_else(|| {
+            self.map.defs.values().find_map(|d| match d {
+                Def::SortDecl(s) if s.modifiers.formula => Some(*s),
+                _ => None,
+            })
+        });
+        match found {
+            Some(decl) => Sort::new(decl.id, &[], decl.modifiers, None),
+            None => {
+                if !self
+                    .errors
+                    .iter()
+                    .any(|e| matches!(e, CheckErr::MissingFormulaSort(_)))
+                {
+                    self.errors.push(CheckErr::MissingFormulaSort(pred));
+                }
+                let modifiers = SortModifiers {
+                    formula: true,
+                    meta: false,
+                    top: true,
+                };
+                Sort::new(pred, &[], modifiers, None)
+            }
+        }
     }
 
     fn check_generic_args(
@@ -376,11 +410,8 @@ impl<'ir> Checker<'ir> {
                 .push(CheckErr::IncorrentNumberOfGenArgs(r.id, def_id));
         }
         let extends = if let Some((_, e)) = decl.extends {
-            Some(
-                self.arena
-                    .alloc_from_iter(e.iter().map(|s| self.ref_to_sort(s)))
-                    as &[Sort<'ir>],
-            )
+            let sup = self.ref_to_sort(e);
+            Some(&*self.arena.alloc(sup))
         } else {
             None
         };

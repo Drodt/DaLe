@@ -299,7 +299,8 @@ pub struct SortDecl<'ir> {
     pub span: Span,
     pub name: Ident,
     pub params: &'ir [GenericParam<'ir>],
-    pub extends: Option<(Span, &'ir [SortRef<'ir>])>,
+    /// `\\extends S`: the one direct supersort besides the top sort.
+    pub extends: Option<(Span, &'ir SortRef<'ir>)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

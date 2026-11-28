@@ -404,3 +404,78 @@ fn bad_problems() {
         .to_string();
     assert!(m.contains("top level of the main file"), "{m}");
 }
+
+const SUBSORTS: &str = r#"
+\theory S {
+  \sorts { \top Any; \formula Formula; int; nat \extends int; Seq<E>; NeSeq<E> \extends Seq<E>; }
+  \functions {
+    \rigid zero -> nat;
+    \rigid minusOne -> int;
+    \rigid empty<E> -> Seq<E>;
+    \rigid single<E>(E) -> NeSeq<E>;
+  }
+  \predicates { le(int, int); isEmpty<E>(Seq<E>); }
+  \rules {
+    // `zero: nat` may be passed where an `int` is expected, also in a rule
+    leZero { \find(le(zero, zero)) \replacewith(le(zero, minusOne)) }
+  }
+}
+"#;
+
+#[test]
+fn supersorts() {
+    let mut th = Theory::load_text(
+        "S.theokey",
+        format!("{SUBSORTS}\n\\problem {{ \\use S::*; le(zero, minusOne) ==> isEmpty<nat>(single<nat>(zero)) }}"),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let decl = |n: &str| {
+        th.sig
+            .sort_decls()
+            .find(|(_, d)| th.name(d.name) == n)
+            .unwrap()
+    };
+    let (int, _) = decl("int");
+    assert_eq!(decl("nat").1.extends, Some(SortPat::simple(int)));
+    assert_eq!(decl("int").1.extends, None);
+    let (seq, _) = decl("Seq");
+    assert_eq!(
+        decl("NeSeq").1.extends,
+        Some(SortPat::Inst {
+            decl: seq,
+            args: vec![GenArgPat::Sort(SortPat::Param(0))]
+        })
+    );
+    let (nat_d, ne_d) = (decl("nat").0, decl("NeSeq").0);
+    let pool = &mut th.pool;
+    let (nat, int) = (
+        pool.mk_sort(nat_d, &[]).unwrap(),
+        pool.mk_sort(int, &[]).unwrap(),
+    );
+    assert!(pool.is_subsort(nat, int) && !pool.is_subsort(int, nat));
+    let ne = pool.mk_sort(ne_d, &[GenArg::Sort(nat)]).unwrap();
+    let s = pool.mk_sort(seq, &[GenArg::Sort(nat)]).unwrap();
+    let s_int = pool.mk_sort(seq, &[GenArg::Sort(int)]).unwrap();
+    assert!(pool.is_subsort(ne, s) && !pool.is_subsort(ne, s_int));
+    assert_eq!(th.problem.as_ref().unwrap().len(), 2);
+    assert!(th.skipped.is_empty(), "{:?}", th.skipped);
+}
+
+#[test]
+fn only_one_supersort() {
+    let text = "\\theory S { \\sorts { \\top Any; \\formula Formula; a; b; c \\extends a, b; } }";
+    let e = Theory::load_text("S.theokey", text)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("error[parse]"), "{e}");
+}
+
+/// A predicate in a rule needs a formula sort; without one the checker reports it.
+#[test]
+fn predicates_without_a_formula_sort() {
+    let text = "\\theory T { \\sorts { \\top Any; } \\predicates { p; } \\rules { r { \\find(p) \\replacewith(p) } } }";
+    let e = Theory::load_text("T.theokey", text)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("Missing formula sort"), "{e}");
+}

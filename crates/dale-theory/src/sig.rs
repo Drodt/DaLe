@@ -205,14 +205,11 @@ impl<'ir, N: Fn(Symbol) -> String> SigLower<'ir, N> {
             return None;
         }
         let params = self.params(d.params);
-        let mut extends = Vec::new();
-        if let Some((_, refs)) = d.extends {
-            for r in refs {
-                if let Some(p) = self.sort_pat(r, d.params) {
-                    extends.push(p);
-                }
-            }
-        }
+        let extends = match d.extends {
+            // an error is reported by `sort_pat`; go on without the supersort
+            Some((_, r)) => self.sort_pat(r, d.params),
+            None => None,
+        };
         self.visiting.remove(&id);
         let mut decl = SortDecl::new(d.name.name);
         decl.kind = if d.modifiers.top {

@@ -71,10 +71,10 @@ pub struct SortDecl {
     pub name: Symbol,
     pub kind: SortKind,
     pub params: Vec<GenParam>,
-    /// The direct supersorts; they may use the parameters of this declaration. Every sort is
-    /// implicitly a subsort of the top sort.
-    // TODO: restrict `extends` to a single sort (the hierarchy becomes a tree).
-    pub extends: Vec<SortPat>,
+    /// The direct supersort, if any besides the top sort; it may use the parameters of this
+    /// declaration. Every sort is implicitly a subsort of the top sort, and the hierarchy is a
+    /// tree.
+    pub extends: Option<SortPat>,
 }
 
 impl SortDecl {
@@ -83,7 +83,7 @@ impl SortDecl {
             name,
             kind: SortKind::Normal,
             params: Vec::new(),
-            extends: Vec::new(),
+            extends: None,
         }
     }
 }
@@ -267,7 +267,7 @@ impl SignatureBuilder {
         match decl.kind {
             SortKind::Normal => {}
             SortKind::Top | SortKind::Formula => {
-                if !decl.params.is_empty() || !decl.extends.is_empty() {
+                if !decl.params.is_empty() || decl.extends.is_some() {
                     return Err(SigError::SpecialSortShape(decl.name));
                 }
                 let slot = if decl.kind == SortKind::Top {
@@ -282,7 +282,7 @@ impl SignatureBuilder {
             }
         }
         self.check_params(decl.name, &decl.params)?;
-        for e in &decl.extends {
+        if let Some(e) = &decl.extends {
             self.check_pat(decl.name, e, &decl.params, decl.params.len())?;
         }
         self.sorts.push(decl);

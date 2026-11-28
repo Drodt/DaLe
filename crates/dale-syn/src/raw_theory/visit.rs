@@ -206,10 +206,8 @@ pub fn visit_sort_decl<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a SortDecl) {
     for p in &x.params {
         v.visit_generic_param(p);
     }
-    if let Some((_, sorts)) = &x.extends {
-        for s in sorts {
-            v.visit_sort(s);
-        }
+    if let Some((_, s)) = &x.extends {
+        v.visit_sort(s);
     }
 }
 

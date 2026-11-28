@@ -405,7 +405,7 @@ impl TermPool {
         let d = sig.sort_decl(decl);
         self.check_generics(&d.params, args)?;
         let mut anc = Vec::new();
-        for e in &d.extends {
+        if let Some(e) = &d.extends {
             let s = self.inst_sort(e, args)?;
             anc.push(s);
             anc.extend_from_slice(&self.sorts.get(s.as_u32()).ancestors);

@@ -171,7 +171,8 @@ pub struct SortDecl {
     pub span: Span,
     pub name: Ident,
     pub params: Vec<GenericParam>,
-    pub extends: Option<(Span, Vec<Sort>)>,
+    /// `\\extends S`: the one direct supersort besides the top sort.
+    pub extends: Option<(Span, Sort)>,
 }
 
 #[derive(Debug, Clone, Copy)]
