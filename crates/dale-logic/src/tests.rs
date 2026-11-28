@@ -1936,10 +1936,10 @@ mod applying {
         r.find_term(px);
         let ty = r.tmpl_sv(y).unwrap();
         r.goal(GoalTemplate::new(Replace::Term(ty)));
-        assert!(matches!(
-            r.finish(),
-            Err(PatternError::UnboundInTemplate(_))
-        ));
+        // `y` is bound by no pattern: it is free, to be supplied when applying
+        let rule = r.finish().unwrap();
+        assert_eq!(rule.free_svs(), &[y]);
+        assert!(rule.is_free(y) && !rule.is_free(x));
         let mut r = rb(&mut f, "bad2");
         let x = r.declare_sv(f.names.intern("x"), SvKind::Formula, SortReq::Any);
         let px = r.sv(x).unwrap();
@@ -1949,5 +1949,280 @@ mod applying {
             succ: vec![],
         }));
         assert!(matches!(r.finish(), Err(PatternError::BadReplace)));
+    }
+}
+
+mod no_find {
+    use std::ops::ControlFlow;
+
+    use super::*;
+
+    fn rb(f: &mut Fx, name: &str) -> RuleBuilder {
+        RuleBuilder::new(f.pool.signature().clone(), f.names.intern(name))
+    }
+
+    /// `cut { \schemaVar c: Formula; \add(c ==>); \add(==> c) }`
+    fn cut(f: &mut Fx) -> (Rule, SvId) {
+        let mut r = rb(f, "cut");
+        let c = r.declare_sv(f.names.intern("c"), SvKind::Formula, SortReq::Any);
+        r.no_find();
+        let tc = r.tmpl_sv(c).unwrap();
+        let mut t = GoalTemplate::new(Replace::Nothing);
+        t.add_ante = vec![tc];
+        r.goal(t);
+        let mut t = GoalTemplate::new(Replace::Nothing);
+        t.add_succ = vec![tc];
+        r.goal(t);
+        (r.finish().unwrap(), c)
+    }
+
+    fn all_matches(f: &Fx, rule: &Rule, seq: &Sequent, b: &mut Bindings) -> Vec<Vec<(Side, u32)>> {
+        let mut out = Vec::new();
+        let _ = match_no_find(&f.pool, rule, seq, b, &mut |m| {
+            out.push(m.matched().to_vec());
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    fn at(f: &Fx, rule: &Rule, seq: &Sequent, a: usize, i: usize) -> Vec<Vec<(Side, u32)>> {
+        let mut b = Bindings::new(rule);
+        let mut out = Vec::new();
+        let _ = match_no_find_at(&f.pool, rule, seq, a, i, &mut b, &mut |m| {
+            out.push(m.matched().to_vec());
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    #[test]
+    fn cut_with_a_supplied_formula() {
+        let mut f = fx();
+        let (rule, c) = cut(&mut f);
+        assert!(matches!(rule.find(), Find::None));
+        assert_eq!(rule.free_svs(), &[c]);
+        let p = f.c(f.p);
+        let (three, zero) = (f.c(f.three), f.c(f.zero));
+        let q = f.pool.mk_inferred(f.le, &[], &[three, zero]).unwrap();
+        let seq = Sequent::new()
+            .add(&f.pool, Side::Succedent, p)
+            .unwrap()
+            .sequent;
+        let mut b = Bindings::new(&rule);
+        // without the cut formula the rule matches (once), but cannot be applied
+        assert_eq!(all_matches(&f, &rule, &seq, &mut b), vec![vec![]]);
+        assert_eq!(
+            apply_rule(&mut f.pool, &rule, 0, &seq, None, &b, SortCheck::Enforce).unwrap_err(),
+            ApplyError::UnboundSv(c)
+        );
+        // a term or an open formula is refused
+        assert_eq!(b.set(&f.pool, &rule, c, three), Err(SetError::Mismatch));
+        let int = f.sort(f.int);
+        let v0 = f.var(int, 0);
+        let open = f.pool.mk_inferred(f.le, &[], &[v0, zero]).unwrap();
+        assert_eq!(b.set(&f.pool, &rule, c, open), Err(SetError::NotClosed));
+        assert_eq!(
+            b.set(&f.pool, &rule, SvId(7), q),
+            Err(SetError::UnknownSv(SvId(7)))
+        );
+        b.set(&f.pool, &rule, c, q).unwrap();
+        // matching keeps what was set
+        assert_eq!(all_matches(&f, &rule, &seq, &mut b).len(), 1);
+        assert_eq!(b.get(c), Some(q));
+        let applied =
+            apply_rule(&mut f.pool, &rule, 5, &seq, None, &b, SortCheck::Enforce).unwrap();
+        assert!(applied.app.find.is_empty() && applied.app.assumes.is_empty());
+        assert_eq!(applied.app.rule, 5);
+        assert_eq!(applied.app.inst.svs[0], Some(q));
+        let [t, e] = &applied.branches[..] else {
+            panic!("two branches")
+        };
+        assert_eq!(t.sequent.antecedent().as_slice(), &[q]);
+        assert_eq!(t.sequent.succedent().as_slice(), &[p]);
+        assert_eq!(e.sequent.antecedent().as_slice(), &[]);
+        assert_eq!(e.sequent.succedent().as_slice(), &[p, q]);
+        // rules without find match nothing of the other kinds, and vice versa
+        let mut b = Bindings::new(&rule);
+        let mut n = 0;
+        let _ = match_term(&f.pool, &rule, &seq, p, &mut b, &mut |_| {
+            n += 1;
+            ControlFlow::Continue(())
+        });
+        let _ = match_sequent(&f.pool, &rule, &seq, &mut b, &mut |_| {
+            n += 1;
+            ControlFlow::Continue(())
+        });
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn a_free_variable_with_a_slot_sort() {
+        let mut f = fx();
+        // \schemaVar t: S (generic) ; \add(le(t, t) ==>)  -- only to exercise slot binding
+        let mut r = rb(&mut f, "refl");
+        let t = r.declare_sv(f.names.intern("t"), SvKind::Term, SortReq::Slot(0));
+        r.no_find();
+        let tt = r.tmpl_sv(t).unwrap();
+        let le = r.tmpl_app(f.le, &[], &[], &[tt, tt]).unwrap();
+        let mut g = GoalTemplate::new(Replace::Nothing);
+        g.add_ante = vec![le];
+        r.goal(g);
+        let rule = r.finish().unwrap();
+        let three = f.c(f.three);
+        let mut b = Bindings::new(&rule);
+        b.set(&f.pool, &rule, t, three).unwrap();
+        assert_eq!(b.slot(0), Some(GenArg::Sort(f.sort(f.int))));
+        // the same again is fine
+        b.set(&f.pool, &rule, t, three).unwrap();
+        let p = f.c(f.p);
+        assert_eq!(b.set(&f.pool, &rule, t, p), Err(SetError::Mismatch));
+    }
+
+    #[test]
+    fn no_find_rules_only_add() {
+        let mut f = fx();
+        let mut r = rb(&mut f, "bad");
+        let c = r.declare_sv(f.names.intern("c"), SvKind::Formula, SortReq::Any);
+        r.no_find();
+        let tc = r.tmpl_sv(c).unwrap();
+        r.goal(GoalTemplate::new(Replace::Term(tc)));
+        assert_eq!(r.finish().unwrap_err(), PatternError::BadReplace);
+        let mut r = rb(&mut f, "bad");
+        let c = r.declare_sv(f.names.intern("c"), SvKind::Formula, SortReq::Any);
+        r.no_find();
+        let tc = r.tmpl_sv(c).unwrap();
+        r.goal(GoalTemplate::new(Replace::Sequent {
+            ante: vec![tc],
+            succ: vec![],
+        }));
+        assert_eq!(r.finish().unwrap_err(), PatternError::BadReplace);
+        // a rule without anything is still `NoFind`
+        assert_eq!(rb(&mut f, "x").finish().unwrap_err(), PatternError::NoFind);
+    }
+
+    /// `lemma { \assumes(le(x, y) ==>) \add(le(x, y) ==>) }`, with `x`, `y` of sort int.
+    fn lemma(f: &mut Fx) -> Rule {
+        let int = f.sort(f.int);
+        let mut r = rb(f, "lemma");
+        let x = r.declare_sv(f.names.intern("x"), SvKind::Term, SortReq::Sub(int));
+        let y = r.declare_sv(f.names.intern("y"), SvKind::Term, SortReq::Sub(int));
+        r.no_find();
+        let (px, py) = (r.sv(x).unwrap(), r.sv(y).unwrap());
+        let le = r.app(f.le, &[], &[], &[px, py]).unwrap();
+        r.assume(Side::Antecedent, le);
+        let (tx, ty) = (r.tmpl_sv(x).unwrap(), r.tmpl_sv(y).unwrap());
+        let le = r.tmpl_app(f.le, &[], &[], &[ty, tx]).unwrap();
+        let mut g = GoalTemplate::new(Replace::Nothing);
+        g.add_succ = vec![le];
+        r.goal(g);
+        r.finish().unwrap()
+    }
+
+    /// `pair { \assumes(a, b ==>) \closegoal }`: two bare formula patterns on one side.
+    fn pair(f: &mut Fx) -> Rule {
+        let mut r = rb(f, "pair");
+        let a = r.declare_sv(f.names.intern("a"), SvKind::Formula, SortReq::Any);
+        let b = r.declare_sv(f.names.intern("b"), SvKind::Formula, SortReq::Any);
+        r.no_find();
+        let (pa, pb) = (r.sv(a).unwrap(), r.sv(b).unwrap());
+        r.assume(Side::Antecedent, pa);
+        r.assume(Side::Antecedent, pb);
+        r.finish().unwrap()
+    }
+
+    #[test]
+    fn the_index_keys_no_find_rules_by_their_assumes() {
+        let mut f = fx();
+        let (c, _) = cut(&mut f);
+        let lemma = lemma(&mut f);
+        let pair = pair(&mut f);
+        let rules = [c, lemma, pair];
+        let ix = RuleIndex::build(&f.pool, &rules);
+        assert_eq!(ix.no_find(), &[0, 1, 2]);
+        assert_eq!(ix.no_find_plain(), &[0]);
+        // term look-ups never see them
+        let (three, zero, p) = (f.c(f.three), f.c(f.zero), f.c(f.p));
+        let le = f.pool.mk_inferred(f.le, &[], &[three, zero]).unwrap();
+        let mut out = Vec::new();
+        ix.candidates(&f.pool, le, &mut out);
+        assert!(out.is_empty());
+        assert_eq!(ix.num_wild(), 0);
+        let mut out = Vec::new();
+        ix.assumes_candidates(&f.pool, Side::Antecedent, le, &mut out);
+        out.sort();
+        assert_eq!(out, vec![(1, 0), (2, 0), (2, 1)]);
+        ix.assumes_candidates(&f.pool, Side::Antecedent, p, &mut out);
+        out.sort();
+        assert_eq!(out, vec![(2, 0), (2, 1)]);
+        ix.assumes_candidates(&f.pool, Side::Succedent, le, &mut out);
+        assert!(out.is_empty());
+
+        // matching the lemma at the formula the index named, and applying it
+        let seq = Sequent::new()
+            .add_all(&f.pool, Side::Antecedent, &[p, le])
+            .unwrap()
+            .sequent;
+        assert_eq!(
+            at(&f, &rules[1], &seq, 0, 1),
+            vec![vec![(Side::Antecedent, 1)]]
+        );
+        assert!(at(&f, &rules[1], &seq, 0, 0).is_empty());
+        let mut b = Bindings::new(&rules[1]);
+        let mut found = None;
+        let _ = match_no_find(&f.pool, &rules[1], &seq, &mut b, &mut |m| {
+            found = Some(m.clone());
+            ControlFlow::Break(())
+        });
+        let m = found.expect("matches");
+        let applied = apply_rule(
+            &mut f.pool,
+            &rules[1],
+            1,
+            &seq,
+            None,
+            &m,
+            SortCheck::Enforce,
+        )
+        .unwrap();
+        let flipped = f.pool.mk_inferred(f.le, &[], &[zero, three]).unwrap();
+        assert_eq!(
+            applied.branches[0].sequent.succedent().as_slice(),
+            &[flipped]
+        );
+        assert_eq!(
+            &*applied.app.assumes,
+            &[PosInOccurrence::new(Side::Antecedent, 1, PosInTerm::top())]
+        );
+    }
+
+    #[test]
+    fn focused_matching_finds_each_match_with_a_formula_once() {
+        let mut f = fx();
+        let pair = pair(&mut f);
+        let (three, zero, p) = (f.c(f.three), f.c(f.zero), f.c(f.p));
+        let le = f.pool.mk_inferred(f.le, &[], &[three, zero]).unwrap();
+        let q = f.and(p, le);
+        let seq = Sequent::new()
+            .add_all(&f.pool, Side::Antecedent, &[p, le, q])
+            .unwrap()
+            .sequent;
+        let mut b = Bindings::new(&pair);
+        let all = all_matches(&f, &pair, &seq, &mut b);
+        assert_eq!(all.len(), 9);
+        for i in 0..3u32 {
+            let mut focused = at(&f, &pair, &seq, 0, i as usize);
+            focused.extend(at(&f, &pair, &seq, 1, i as usize));
+            focused.sort_by_key(|m| m.iter().map(|x| x.1).collect::<Vec<_>>());
+            let mut expect: Vec<_> = all
+                .iter()
+                .filter(|m| m.contains(&(Side::Antecedent, i)))
+                .cloned()
+                .collect();
+            expect.sort_by_key(|m| m.iter().map(|x| x.1).collect::<Vec<_>>());
+            assert_eq!(focused, expect, "formula {i}");
+        }
+        // out of range
+        assert!(at(&f, &pair, &seq, 2, 0).is_empty());
+        assert!(at(&f, &pair, &seq, 0, 3).is_empty());
     }
 }

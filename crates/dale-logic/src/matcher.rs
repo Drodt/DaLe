@@ -11,7 +11,13 @@
 //! * `\assumes` patterns are matched one after the other, each against *all* formulas of its
 //!   side (depth-first with backtracking); one sequent formula may match several patterns (as in
 //!   KeY);
-//! * conditions are checked at the end.
+//! * conditions are checked at the end;
+//! * rules without `\find` ([`Find::None`]) only match their `\assumes` ([`match_no_find`],
+//!   [`match_no_find_at`]);
+//! * schema variables that are already bound when matching starts are constraints: they only
+//!   match what they are bound to. That is how the free schema variables of a rule (those no
+//!   pattern binds, [`Rule::free_svs`]) are supplied: [`Bindings::reset`], [`Bindings::set`], then
+//!   match. Matching restores the bindings it started with.
 //!
 //! TODO: bucket the formulas of a semisequent by head operator; 97% of candidates fail in KeY's
 //! profile. TODO: order the patterns statically (ground ones first, `\assumes` before a bare
@@ -100,6 +106,43 @@ impl Bindings {
     }
 }
 
+/// Why [`Bindings::set`] refused a term.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetError {
+    UnknownSv(SvId),
+    /// The term has loose bound variables; supplied terms must be closed.
+    NotClosed,
+    /// The term does not fit the schema variable (kind, sort, or the sort bound to its generic
+    /// slot), or the schema variable is bound to a different term.
+    Mismatch,
+}
+
+impl Bindings {
+    /// Binds `sv` of `rule` to the closed term `t`, as if a pattern at the top level had matched
+    /// it: the kind and sort are checked and a [`SortReq::Slot`] binds its slot. Meant for the
+    /// free schema variables ([`Rule::free_svs`]); binding one that a pattern binds restricts the
+    /// matches to those where it matches `t`. Binding the same term again is allowed.
+    pub fn set(
+        &mut self,
+        pool: &TermPool,
+        rule: &Rule,
+        sv: SvId,
+        t: TermIdx,
+    ) -> Result<(), SetError> {
+        if sv.0 as usize >= rule.num_svs() || self.svs.len() != rule.num_svs() {
+            return Err(SetError::UnknownSv(sv));
+        }
+        if pool[t].loose() != 0 {
+            return Err(SetError::NotClosed);
+        }
+        if bind_sv(pool, rule, self, sv, t, 0) {
+            Ok(())
+        } else {
+            Err(SetError::Mismatch)
+        }
+    }
+}
+
 /// A snapshot of the instantiation of a rule: what each schema variable and generic slot matched.
 /// Kept in the proof tree for every rule application.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -152,6 +195,10 @@ struct Ctx<'a> {
     pool: &'a TermPool,
     rule: &'a Rule,
     seq: &'a Sequent,
+    /// `(a, i)`: the `\assumes` pattern `a` only matches the formula `i` of its side, and the
+    /// patterns before `a` on that side do not match formula `i` (so that each match is found
+    /// for exactly one `a`, see [`match_no_find_at`]).
+    focus: Option<(usize, usize)>,
 }
 
 impl Ctx<'_> {
@@ -206,47 +253,7 @@ impl Ctx<'_> {
     }
 
     fn m_sv(&self, b: &mut Bindings, sv: SvId, t: TermIdx, depth: u32) -> bool {
-        let pool = self.pool;
-        if let Some((bound, d0)) = b.svs[sv.0 as usize] {
-            if d0 == depth {
-                return bound == t;
-            }
-            // A different binder depth: only terms that do not mention the pattern's own binders
-            // can be the same, and they differ by the shift of the outer variables.
-            let (bt, tt) = (&pool[bound], &pool[t]);
-            if bt.may_have_free_below(d0) || tt.may_have_free_below(depth) {
-                return false;
-            }
-            return if depth > d0 {
-                is_lifted(pool, t, bound, depth - d0, 0)
-            } else {
-                is_lifted(pool, bound, t, d0 - depth, 0)
-            };
-        }
-        let decl = self.rule.sv(sv);
-        let sort = pool.sort_of(t);
-        let is_formula = sort == pool.formula();
-        match decl.kind {
-            SvKind::Formula if !is_formula => return false,
-            SvKind::Term if is_formula => return false,
-            _ => {}
-        }
-        match decl.sort {
-            SortReq::Any => {}
-            SortReq::Sub(s) => {
-                if !pool.is_subsort(sort, s) {
-                    return false;
-                }
-            }
-            SortReq::Slot(i) => {
-                if !bind_slot(b, i, GenArg::Sort(sort)) {
-                    return false;
-                }
-            }
-        }
-        b.svs[sv.0 as usize] = Some((t, depth));
-        b.trail.push(Undo::Sv(sv.0));
-        true
+        bind_sv(self.pool, self.rule, b, sv, t, depth)
     }
 
     fn conds_hold(&self, b: &Bindings) -> bool {
@@ -267,10 +274,19 @@ impl Ctx<'_> {
         assumes: usize,
         k: &mut dyn FnMut(&Bindings) -> ControlFlow<()>,
     ) -> ControlFlow<()> {
+        let mut skip = None;
         let (side, pat, at, rest_find, rest_assumes) = if let Some((f, r)) = find.split_first() {
             (f.side, f.pat, f.at, r, assumes)
         } else if let Some(a) = self.rule.assumes().get(assumes) {
-            (a.side, a.pat, None, find, assumes + 1)
+            let at = match self.focus {
+                Some((fa, fi)) if fa == assumes => Some(fi),
+                Some((fa, fi)) if fa > assumes && self.rule.assumes()[fa].side == a.side => {
+                    skip = Some(fi);
+                    None
+                }
+                _ => None,
+            };
+            (a.side, a.pat, at, find, assumes + 1)
         } else {
             return if self.conds_hold(b) {
                 k(b)
@@ -284,6 +300,9 @@ impl Ctx<'_> {
             None => 0..formulas.len(),
         };
         for i in range {
+            if skip == Some(i) {
+                continue;
+            }
             let f = formulas[i];
             let mark = b.mark();
             b.matched.push((side, i as u32));
@@ -307,6 +326,57 @@ struct FindStep {
     side: Side,
     pat: PatId,
     at: Option<usize>,
+}
+
+/// Binds `sv` to `t` (below `depth` pattern binders), or checks that it is bound to the same term.
+fn bind_sv(
+    pool: &TermPool,
+    rule: &Rule,
+    b: &mut Bindings,
+    sv: SvId,
+    t: TermIdx,
+    depth: u32,
+) -> bool {
+    if let Some((bound, d0)) = b.svs[sv.0 as usize] {
+        if d0 == depth {
+            return bound == t;
+        }
+        // A different binder depth: only terms that do not mention the pattern's own binders
+        // can be the same, and they differ by the shift of the outer variables.
+        let (bt, tt) = (&pool[bound], &pool[t]);
+        if bt.may_have_free_below(d0) || tt.may_have_free_below(depth) {
+            return false;
+        }
+        return if depth > d0 {
+            is_lifted(pool, t, bound, depth - d0, 0)
+        } else {
+            is_lifted(pool, bound, t, d0 - depth, 0)
+        };
+    }
+    let decl = rule.sv(sv);
+    let sort = pool.sort_of(t);
+    let is_formula = sort == pool.formula();
+    match decl.kind {
+        SvKind::Formula if !is_formula => return false,
+        SvKind::Term if is_formula => return false,
+        _ => {}
+    }
+    match decl.sort {
+        SortReq::Any => {}
+        SortReq::Sub(s) => {
+            if !pool.is_subsort(sort, s) {
+                return false;
+            }
+        }
+        SortReq::Slot(i) => {
+            if !bind_slot(b, i, GenArg::Sort(sort)) {
+                return false;
+            }
+        }
+    }
+    b.svs[sv.0 as usize] = Some((t, depth));
+    b.trail.push(Undo::Sv(sv.0));
+    true
 }
 
 fn bind_slot(b: &mut Bindings, i: u32, v: GenArg) -> bool {
@@ -337,7 +407,12 @@ pub fn match_term(
     let Find::Term(p) = rule.find() else {
         return ControlFlow::Continue(());
     };
-    let cx = Ctx { pool, rule, seq };
+    let cx = Ctx {
+        pool,
+        rule,
+        seq,
+        focus: None,
+    };
     let mark = b.mark();
     let r = if cx.m(b, p, t, 0) {
         cx.steps(b, &[], 0, k)
@@ -410,9 +485,71 @@ fn sequent_steps(
     if !focused {
         return ControlFlow::Continue(());
     }
-    let cx = Ctx { pool, rule, seq };
+    let cx = Ctx {
+        pool,
+        rule,
+        seq,
+        focus: None,
+    };
     let mark = b.mark();
     let r = cx.steps(b, &find[..n], 0, k);
+    b.undo(mark);
+    r
+}
+
+/// Finds all matches of a rule without `\find` ([`Find::None`]) in `seq`: its `\assumes` patterns
+/// against the formulas of their sides, then the conditions. A rule without `\assumes` matches
+/// once (with the bindings set before). Rules with a find do not match. Otherwise as
+/// [`match_term`].
+pub fn match_no_find(
+    pool: &TermPool,
+    rule: &Rule,
+    seq: &Sequent,
+    b: &mut Bindings,
+    k: &mut dyn FnMut(&Bindings) -> ControlFlow<()>,
+) -> ControlFlow<()> {
+    no_find_steps(pool, rule, seq, None, b, k)
+}
+
+/// Like [`match_no_find`], only the matches in which `\assumes` pattern `assumes` matches the
+/// formula at `index` of its side and no earlier pattern of that side matches it. For a new
+/// formula `f`, calling this for each `(rule, assumes)` of
+/// [`RuleIndex::assumes_candidates`](crate::RuleIndex::assumes_candidates) yields every match
+/// that uses `f` exactly once. (A match that uses two new formulas is found for each of them.)
+pub fn match_no_find_at(
+    pool: &TermPool,
+    rule: &Rule,
+    seq: &Sequent,
+    assumes: usize,
+    index: usize,
+    b: &mut Bindings,
+    k: &mut dyn FnMut(&Bindings) -> ControlFlow<()>,
+) -> ControlFlow<()> {
+    if assumes >= rule.assumes().len() {
+        return ControlFlow::Continue(());
+    }
+    no_find_steps(pool, rule, seq, Some((assumes, index)), b, k)
+}
+
+fn no_find_steps(
+    pool: &TermPool,
+    rule: &Rule,
+    seq: &Sequent,
+    focus: Option<(usize, usize)>,
+    b: &mut Bindings,
+    k: &mut dyn FnMut(&Bindings) -> ControlFlow<()>,
+) -> ControlFlow<()> {
+    let Find::None = rule.find() else {
+        return ControlFlow::Continue(());
+    };
+    let cx = Ctx {
+        pool,
+        rule,
+        seq,
+        focus,
+    };
+    let mark = b.mark();
+    let r = cx.steps(b, &[], 0, k);
     b.undo(mark);
     r
 }

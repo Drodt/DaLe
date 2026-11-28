@@ -4,6 +4,9 @@
 //!   variable of any sort if `S` is the `\top` sort, else a term schema variable of `S` or a
 //!   subsort.
 //! * `\find(t)` is a term find, `\find(a ==> b)` a sequent find (at most one formula per side).
+//!   A rule without `\find` (`cut`) only matches its `\assumes` and can only `\add`.
+//! * Schema variables that neither `\find` nor `\assumes` mention (`cutFormula`) are free: the
+//!   user or the strategy supplies them when applying the rule ([`Rule::free_svs`]).
 //!   `\assumes(a1, .. ==> b1, ..)` gives one assumes pattern per formula.
 //! * Subterms without schema variables become ground terms of the pool (matched by index
 //!   comparison). An operator written without generic arguments matches any instantiation in a
@@ -13,8 +16,7 @@
 //!   for a term find, `\replacewith(a ==> b)` for a sequent find, `\add(a ==> b)`, and the label
 //!   `"name":`.
 //!
-//! Not supported yet (the rule is skipped with a message): rules without `\find`, meta arguments
-//! in rules, sort parameters in schema variable sorts, a term in `\assumes` or `\add`.
+//! Not supported yet (the rule is skipped with a message): meta arguments in rules, sort parameters in schema variable sorts, a term in `\assumes` or `\add`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -122,24 +124,23 @@ enum Head<'ir> {
 
 impl RuleLower<'_> {
     fn rule(&mut self, r: &ir::Rule<'static>) -> Res2<Rule> {
-        let Some((find_span, find)) = r.find else {
-            // TODO: lower rules without `\find` once dale-logic supports them (see
-            // `PatternError::NoFind`).
-            return fail(r.span, "rules without \\find are not supported yet");
-        };
         for sv in r.schema_vars {
             let (kind, sort) = self.sv_sort(sv.sort)?;
             let id = self.b.declare_sv(sv.name.name, kind, sort);
             self.svs.insert(sv.id, id);
         }
         let mut find_sides = (false, false);
-        let term_find = match find {
-            TermOrSeq::Term(t) => {
+        let term_find = match r.find {
+            None => {
+                self.b.no_find();
+                None
+            }
+            Some((_, TermOrSeq::Term(t))) => {
                 let p = self.pat(t)?;
                 self.b.find_term(p);
-                true
+                Some(true)
             }
-            TermOrSeq::Seq(s) => {
+            Some((find_span, TermOrSeq::Seq(s))) => {
                 if s.ante.len() > 1 || s.succ.len() > 1 {
                     return fail(
                         find_span,
@@ -150,7 +151,7 @@ impl RuleLower<'_> {
                 let succ = s.succ.first().map(|t| self.pat(t)).transpose()?;
                 find_sides = (ante.is_some(), succ.is_some());
                 self.b.find_sequent(ante, succ);
-                false
+                Some(false)
             }
         };
         if let Some((span, a)) = r.assumes {
@@ -171,8 +172,13 @@ impl RuleLower<'_> {
                 let (mut extra_ante, mut extra_succ) = (Vec::new(), Vec::new());
                 let replace = match g.replace_with {
                     None => Replace::Nothing,
-                    Some(TermOrSeq::Term(t)) if term_find => Replace::Term(self.tmpl(t)?),
-                    Some(TermOrSeq::Seq(s)) if !term_find => {
+                    Some(_) if term_find.is_none() => {
+                        return fail(g.span, "a rule without \\find has no \\replacewith");
+                    }
+                    Some(TermOrSeq::Term(t)) if term_find == Some(true) => {
+                        Replace::Term(self.tmpl(t)?)
+                    }
+                    Some(TermOrSeq::Seq(s)) if term_find == Some(false) => {
                         let mut ante = self.tmpls(s.ante)?;
                         let mut succ = self.tmpls(s.succ)?;
                         if !find_sides.0 {

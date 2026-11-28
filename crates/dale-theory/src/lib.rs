@@ -13,7 +13,7 @@
 //! The two crates stay independent of each other; only this crate knows both.
 //!
 //! Errors in the signature make loading fail. A rule that cannot be expressed in `dale-logic`
-//! yet (for instance one without `\find`, like `cut`) is *skipped* and reported in
+//! yet (for instance one with meta arguments) is *skipped* and reported in
 //! [`Theory::skipped`], so that the rest of a theory stays usable while the rule layer grows.
 //!
 //! Symbols: the IR and `dale-logic` use the same [`Symbol`] type, and the front end's interner

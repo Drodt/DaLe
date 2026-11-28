@@ -11,8 +11,12 @@
 //! otherwise the application fails with [`ApplyError::CapturesBinder`]. Rules state this with
 //! [`Cond::NoFreeVar`](crate::Cond::NoFreeVar), which makes the match fail before.
 //!
+//! Rules without `\find` apply to the goal as a whole: no position, only added formulas. Their
+//! free schema variables (and those of any rule, [`Rule::free_svs`]) must have been set in the
+//! bindings ([`Bindings::set`]); an unset one is [`ApplyError::UnboundSv`].
+//!
 //! TODO: new symbols (`\new`, skolem constants), meta operations (`#typeof`, ...), `\addrules`,
-//! update handling, and rules without a position.
+//! update handling.
 
 use crate::error::LogicError;
 use crate::ids::TermIdx;
@@ -64,7 +68,7 @@ pub struct Applied {
 
 /// Applies `rule` (number `id` in the caller's rule list) to `seq`, which the match `b` was found
 /// in. For a term `\find`, `find` is the position of the matched term in `seq`; for a sequent
-/// `\find` it is not needed (the match knows the formulas). New terms are built in `pool`;
+/// `\find` or none it is not needed (the match knows the formulas). New terms are built in `pool`;
 /// `checks` says whether their sorts are verified again (rules are checked when loaded).
 pub fn apply_rule(
     pool: &mut TermPool,
@@ -87,6 +91,7 @@ pub fn apply_rule(
             let m = b.matched().get(..n).ok_or(ApplyError::BadMatch)?;
             (m.iter().map(top).collect(), n)
         }
+        Find::None => (Vec::new(), 0),
     };
     let assumes: Box<[PosInOccurrence]> = b
         .matched()

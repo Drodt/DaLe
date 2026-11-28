@@ -95,6 +95,10 @@ pub enum Find {
         ante: Option<PatId>,
         succ: Option<PatId>,
     },
+    /// No `\find` (`cut`, `int_induction`, lemmas with `\assumes`): the rule is applied to a goal
+    /// as a whole, matching only its `\assumes` patterns, and may only add formulas
+    /// ([`Replace::Nothing`]).
+    None,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -190,6 +194,8 @@ pub struct Rule {
     pub(crate) conds: Vec<Cond>,
     pub(crate) tmpls: Vec<TmplNode>,
     pub(crate) goals: Vec<GoalTemplate>,
+    /// The schema variables no pattern binds, in declaration order.
+    pub(crate) free: Vec<SvId>,
 }
 
 impl Rule {
@@ -221,6 +227,17 @@ impl Rule {
     pub fn node(&self, id: PatId) -> &PatNode {
         &self.nodes[id.0 as usize]
     }
+    /// The schema variables that no pattern binds, such as `cutFormula` of `cut`: matching leaves
+    /// them unbound, and whoever applies the rule (user or strategy) supplies them with
+    /// [`Bindings::set`](crate::Bindings::set) first. The instantiation of the
+    /// [`Application`](crate::Application) records them like the others.
+    pub fn free_svs(&self) -> &[SvId] {
+        &self.free
+    }
+    /// Whether no pattern binds `sv` (see [`free_svs`](Self::free_svs)).
+    pub fn is_free(&self, sv: SvId) -> bool {
+        self.free.contains(&sv)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -239,21 +256,16 @@ pub enum PatternError {
     },
     UnknownSv(SvId),
     UnknownNode(PatId),
-    /// A condition mentions a schema variable that occurs in no pattern.
+    /// A condition mentions a schema variable that occurs in no pattern (conditions on free
+    /// schema variables are not supported yet).
     UnboundInCond(SvId),
     /// `Find` is a sequent find without any formula.
     EmptyFind,
-    /// The rule has no `\find`.
-    // TODO: rules without `\find` (`cut`): a `Find::None` variant (matching only checks
-    // `\assumes`, applying needs no position, the index keeps such rules in a per-goal list), and
-    // schema variables that no pattern binds (`cutFormula`, the instance of `allLeft`), filled from
-    // outside (user or strategy) and recorded in the `Application`. After the problem syntax.
+    /// No find was set; rules without `\find` call [`RuleBuilder::no_find`].
     NoFind,
     UnknownTemplate(TmplId),
-    /// A template mentions a schema variable that occurs in no pattern.
-    UnboundInTemplate(SvId),
-    /// `Replace::Term` for a sequent find, `Replace::Sequent` for a term find, or formulas for a
-    /// side without find part.
+    /// `Replace::Term` for a sequent find, `Replace::Sequent` for a term find, formulas for a
+    /// side without find part, or anything but `Replace::Nothing` for a rule without find.
     BadReplace,
     /// Some but not all generic arguments of a template operator are inferred.
     MixedInfer,
@@ -365,6 +377,11 @@ impl RuleBuilder {
         self.find = Some(Find::Sequent { ante, succ });
     }
 
+    /// The rule has no `\find` ([`Find::None`]).
+    pub fn no_find(&mut self) {
+        self.find = Some(Find::None);
+    }
+
     pub fn assume(&mut self, side: Side, pat: PatId) {
         self.assumes.push(Assumes { side, pat });
     }
@@ -463,17 +480,15 @@ impl RuleBuilder {
                 _ => return Err(PatternError::UnboundInCond(*sv)),
             }
         }
-        // templates: only known schema variables that the patterns bind; consistent replacement
+        // Schema variables that no pattern binds are free: supplied from outside when applying.
+        let free = (0..self.svs.len() as u32)
+            .map(SvId)
+            .filter(|s| !seen[s.0 as usize])
+            .collect();
+        // templates: consistent replacement
         let n_tmpl = self.tmpls.len() as u32;
-        for n in &self.tmpls {
-            if let TmplNode::Sv(s) = n
-                && !seen[s.0 as usize]
-            {
-                return Err(PatternError::UnboundInTemplate(*s));
-            }
-        }
         let (has_ante, has_succ) = match find {
-            Find::Term(_) => (false, false),
+            Find::Term(_) | Find::None => (false, false),
             Find::Sequent { ante, succ } => (ante.is_some(), succ.is_some()),
         };
         for g in &self.goals {
@@ -487,7 +502,7 @@ impl RuleBuilder {
                     all.copied().chain([*t]).collect()
                 }
                 Replace::Sequent { ante, succ } => {
-                    if matches!(find, Find::Term(_))
+                    if matches!(find, Find::Term(_) | Find::None)
                         || (!has_ante && !ante.is_empty())
                         || (!has_succ && !succ.is_empty())
                     {
@@ -510,6 +525,7 @@ impl RuleBuilder {
             find,
             assumes: self.assumes,
             conds: self.conds,
+            free,
         })
     }
 

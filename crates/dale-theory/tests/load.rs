@@ -59,14 +59,17 @@ fn rustydl_signature() {
             .all(|(_, d)| th.name(d.name) != "NUMBER")
     );
 
-    // every rule but `cut` (no \find) is loaded
+    // every rule is loaded, `cut` (no \find) too
     let skipped: Vec<String> = th.skipped.iter().map(|d| th.render(d)).collect();
-    assert_eq!(skipped.len(), 1, "{skipped:?}");
-    assert!(
-        skipped[0].contains("`cut`") && skipped[0].contains("RustyDL.theokey:"),
-        "{skipped:?}"
-    );
-    assert_eq!(th.rules.len(), 45);
+    assert!(skipped.is_empty(), "{skipped:?}");
+    assert_eq!(th.rules.len(), 46);
+    let cut = th.rule_named("cut").unwrap();
+    assert_eq!(th.index.no_find(), &[cut]);
+    assert_eq!(th.index.no_find_plain(), &[cut]);
+    let cut = &th.rules[cut as usize];
+    assert!(matches!(cut.find(), dale_logic::Find::None));
+    assert_eq!(cut.free_svs().len(), 1);
+    assert_eq!(th.name(cut.sv(cut.free_svs()[0]).name), "cutFormula");
     let close = th.rule_named("close").unwrap() as usize;
     assert_eq!(th.name(th.info[close].rule_sets[0]), "closure");
     assert_eq!(
@@ -88,6 +91,12 @@ fn apply_first(
     match rule.find() {
         Find::Sequent { .. } => {
             let _ = match_sequent(&th.pool, rule, seq, &mut b, &mut |m| {
+                hit = Some((None, m.clone()));
+                ControlFlow::Break(())
+            });
+        }
+        Find::None => {
+            let _ = match_no_find(&th.pool, rule, seq, &mut b, &mut |m| {
                 hit = Some((None, m.clone()));
                 ControlFlow::Break(())
             });
@@ -187,13 +196,63 @@ fn rules_from_the_file_apply_like_keys() {
 }
 
 #[test]
+fn cut_with_a_supplied_formula() {
+    let (mut th, seq) = prop_goal("and(p0, p1) ==> p1");
+    let r = th.rule_named("cut").unwrap();
+    let rule = &th.rules[r as usize];
+    let c = rule.free_svs()[0];
+    let mut b = Bindings::new(rule);
+    // the strategy (here: the test) picks the cut formula, e.g. `p0` from `and(p0, p1)`
+    let cut_formula = th.pool.subs_of(seq.antecedent().as_slice()[0])[0];
+    b.set(&th.pool, rule, c, cut_formula).unwrap();
+    let mut hit = None;
+    let _ = match_no_find(&th.pool, rule, &seq, &mut b, &mut |m| {
+        hit = Some(m.clone());
+        ControlFlow::Break(())
+    });
+    let m = hit.expect("cut matches every goal");
+    let a = apply_rule(&mut th.pool, rule, r, &seq, None, &m, SortCheck::Enforce).unwrap();
+    let names = th.names();
+    let shown: Vec<_> = a
+        .branches
+        .iter()
+        .map(|b| {
+            (
+                b.label.map(|l| th.name(l).to_owned()),
+                th.pool.show_sequent(names, &b.sequent).to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(shown.len(), 2);
+    assert_eq!(shown[0].0.as_deref(), Some("CUT: #cutFormula TRUE"));
+    assert_eq!(shown[0].1, "and(p0, p1), p0 ==> p1");
+    assert_eq!(shown[1].1, "and(p0, p1) ==> p1, p0");
+    assert!(a.app.find.is_empty());
+    assert_eq!(a.app.inst.svs[c.0 as usize], Some(cut_formula));
+}
+
+#[test]
+fn no_find_rules_with_assumes_are_indexed_by_them() {
+    let th = load(
+        r#"
+        lemma { \schemaVar b: Formula; \assumes(not(b) ==>) \add(==> b) }
+        "#,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert!(th.skipped.is_empty(), "{:?}", th.skipped);
+    assert_eq!(th.index.no_find(), &[0]);
+    assert!(th.index.no_find_plain().is_empty());
+    assert!(th.rules[0].free_svs().is_empty());
+}
+
+#[test]
 fn unsupported_rules_are_skipped_with_a_reason() {
     let th = load(
         r#"
         ok { \schemaVar b: Formula; \find(not(not(b))) \replacewith(b) }
         shape { \schemaVar b: Formula; \find(not(b) ==>) \replacewith(b) }
         two { \schemaVar b: Formula; \find(b, b ==>) \closegoal }
-        nofind { \schemaVar b: Formula; \add(b ==>) }
+        nofind { \schemaVar b: Formula; \replacewith(b ==>) }
         "#,
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -209,7 +268,7 @@ fn unsupported_rules_are_skipped_with_a_reason() {
         "{msgs:?}"
     );
     assert!(
-        msgs[2].contains("`nofind`") && msgs[2].contains("without \\find"),
+        msgs[2].contains("`nofind`") && msgs[2].contains("without \\find has no \\replacewith"),
         "{msgs:?}"
     );
     assert!(msgs[0].starts_with("T.theokey:"), "{msgs:?}");
