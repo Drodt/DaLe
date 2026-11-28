@@ -53,6 +53,10 @@ pub enum LogicError {
     CannotLower(u64),
     /// `instantiate` was called on a term whose operator binds no variable.
     NotABinder,
+    /// `instantiate` was called on a binder that binds its variable in several arguments.
+    SeveralBoundArgs,
+    /// `instantiate_arg` was called with an argument that is not under the binder.
+    NotBoundArg(u32),
 }
 
 impl std::fmt::Display for LogicError {

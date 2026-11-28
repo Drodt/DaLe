@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crate::error::LogicError;
 use crate::ids::{SortIdx, TermIdx};
 use crate::pool::{GenArg, TermPool};
-use crate::sig::MetaValue;
+use crate::sig::{MetaValue, binds_arg};
 
 type Cache = HashMap<(TermIdx, u32), TermIdx>;
 
@@ -45,7 +45,7 @@ impl TermPool {
             let mut new = Vec::with_capacity(old.len());
             for (i, a) in old.into_iter().enumerate() {
                 let c = match bind {
-                    Some((b, _)) if b as usize == i => cutoff + 1,
+                    Some((m, _)) if binds_arg(m, i) => cutoff + 1,
                     _ => cutoff,
                 };
                 new.push(self.shift(a, amount, c, cache)?);
@@ -101,7 +101,7 @@ impl TermPool {
             let mut new = Vec::with_capacity(old.len());
             for (i, a) in old.into_iter().enumerate() {
                 let c = match bind {
-                    Some((b, _)) if b as usize == i => cutoff + 1,
+                    Some((m, _)) if binds_arg(m, i) => cutoff + 1,
                     _ => cutoff,
                 };
                 new.push(self.lower_rec(a, amount, c, cache)?);
@@ -112,13 +112,33 @@ impl TermPool {
         Ok(r)
     }
 
-    /// For a binder term `Q(.., body, ..)`, the body with the bound variable replaced by `repl`
-    /// (whose sort must be a subsort of the variable's sort). Variables of `repl` that are free
-    /// refer to the binders around `binder`.
+    /// For a binder term `Q(.., body, ..)` that binds its variable in exactly one argument, that
+    /// argument with the bound variable replaced by `repl` (whose sort must be a subsort of the
+    /// variable's sort). Variables of `repl` that are free refer to the binders around `binder`.
+    /// For binders of several arguments use [`instantiate_arg`](Self::instantiate_arg).
     pub fn instantiate(&mut self, binder: TermIdx, repl: TermIdx) -> Result<TermIdx, LogicError> {
-        let (b, var_sort) = self[self.op_of(binder)]
+        let (mask, _) = self[self.op_of(binder)]
             .bind()
             .ok_or(LogicError::NotABinder)?;
+        if mask.count_ones() != 1 {
+            return Err(LogicError::SeveralBoundArgs);
+        }
+        self.instantiate_arg(binder, mask.trailing_zeros(), repl)
+    }
+
+    /// Like [`instantiate`](Self::instantiate) for the bound argument `arg` of `binder`.
+    pub fn instantiate_arg(
+        &mut self,
+        binder: TermIdx,
+        arg: u32,
+        repl: TermIdx,
+    ) -> Result<TermIdx, LogicError> {
+        let (mask, var_sort) = self[self.op_of(binder)]
+            .bind()
+            .ok_or(LogicError::NotABinder)?;
+        if !binds_arg(mask, arg as usize) {
+            return Err(LogicError::NotBoundArg(arg));
+        }
         let found = self.sort_of(repl);
         if !self.is_subsort(found, var_sort) {
             return Err(LogicError::BindSort {
@@ -126,7 +146,7 @@ impl TermPool {
                 found,
             });
         }
-        let body = self.subs_of(binder)[b as usize];
+        let body = self.subs_of(binder)[arg as usize];
         self.subst(body, 0, repl, &mut Cache::new())
     }
 
@@ -157,7 +177,7 @@ impl TermPool {
             let mut new = Vec::with_capacity(old.len());
             for (i, a) in old.into_iter().enumerate() {
                 let d = match bind {
-                    Some((b, _)) if b as usize == i => depth + 1,
+                    Some((m, _)) if binds_arg(m, i) => depth + 1,
                     _ => depth,
                 };
                 new.push(self.subst(a, d, repl, cache)?);

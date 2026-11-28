@@ -1,0 +1,12 @@
+[package]
+name = "dale-theory"
+description = "Loads checked .theokey theories into dale-logic signatures and rules"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dale-logic = { path = "../dale-logic" }
+dale-syn = { path = "../dale-syn" }
+dale-util = { path = "../dale-util" }

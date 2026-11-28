@@ -490,6 +490,7 @@ pub fn parse_text(path: PathBuf, text: String) -> Result<Parsed, Error> {
     }
 
     let Some(raw) = raw else { fail!() };
+    check_problems(&raw, &sources, &mut diagnostics);
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         fail!()
     }
@@ -562,6 +563,44 @@ pub fn parse_text(path: PathBuf, text: String) -> Result<Parsed, Error> {
         files,
         warnings: diagnostics,
     })
+}
+
+/// There is at most one `\\problem`, at the top level of the main file.
+fn check_problems(raw: &raw_theory::File, sources: &SourceMap, diagnostics: &mut Vec<Diagnostic>) {
+    fn nested(items: &[ModuleItem], out: &mut Vec<raw_theory::Span>) {
+        for i in items {
+            match i {
+                ModuleItem::Theory(t) if t.problem => out.push(t.name.span),
+                ModuleItem::Theory(_) => {}
+                ModuleItem::Module(m) => nested(&m.items, out),
+            }
+        }
+    }
+    let mut error = |message: &str, span: raw_theory::Span| {
+        diagnostics.push(Diagnostic {
+            severity: Severity::Error,
+            phase: Phase::Parse,
+            message: message.to_string(),
+            span: Some(sources.to_span(span)),
+        })
+    };
+    let mut seen = false;
+    let mut inner = Vec::new();
+    for i in &raw.items {
+        match i {
+            ModuleItem::Theory(t) if t.problem => {
+                if seen {
+                    error("there can be only one \\problem", t.name.span);
+                }
+                seen = true;
+            }
+            ModuleItem::Theory(_) => {}
+            ModuleItem::Module(m) => nested(&m.items, &mut inner),
+        }
+    }
+    for s in inner {
+        error("a \\problem must be at the top level of the main file", s);
+    }
 }
 
 /// Reads and parses the files of a program.

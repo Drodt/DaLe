@@ -1142,6 +1142,10 @@ impl<'a, 'ast, 'cx> Visit<'ast> for ScopeBuilder<'a, 'cx> {
             raw::TermKind::Call(p, ..) => p,
             raw::TermKind::ParametricPath(path, ..) => path,
             raw::TermKind::ParametricCall(path, ..) => path,
+            raw::TermKind::Num(_) => {
+                self.expected_ns = old_ns;
+                return;
+            }
         };
         let last_seg_id = path.segments.last().unwrap().id;
         let res = self.resolver.resolved[&last_seg_id];

@@ -264,6 +264,7 @@ impl<'ir> Checker<'ir> {
         let (path, args, subs) = match t.kind {
             TermKind::Path(path, generic_args) => (path, generic_args, None),
             TermKind::Call(path, generic_args, terms) => (path, generic_args, Some(terms)),
+            TermKind::Num(_) => unreachable!("number literals only occur in problems"),
         };
         let Res::Def(_, def_id) = path.res else {
             panic!("{t:?}")
@@ -492,6 +493,14 @@ impl<'ir> Visit<'ir> for Checker<'ir> {
 
     fn visit_rule_set_ref(&mut self, x: &'ir RuleSetRef<'ir>) {
         self.check_rule_set_ref(x);
+    }
+
+    fn visit_item_kind(&mut self, x: &'ir ItemKind<'ir>) {
+        // The terms of a problem use explicit generics and de Bruijn literals, which this checker
+        // does not know; they are checked when they are built (in `dale-theory`).
+        if !matches!(x, ItemKind::Problem(_)) {
+            ir::visit::visit_item_kind(self, x);
+        }
     }
 
     fn visit_item_id(&mut self, x: &'ir ir::ItemId) {

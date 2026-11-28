@@ -162,6 +162,11 @@ pub fn visit_item_kind<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a ItemKind) {
                 v.visit_cost_item(c);
             }
         }
+        ItemKind::Problem(seq) => {
+            for t in seq.ante.iter().chain(&seq.succ) {
+                v.visit_term(t);
+            }
+        }
     }
 }
 
@@ -185,6 +190,9 @@ pub fn visit_function_decl<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Function
     v.visit_ident(&x.name);
     for p in &x.params {
         v.visit_generic_param(p);
+    }
+    if let Some(b) = &x.bind {
+        v.visit_sort(&b.sort);
     }
     for s in &x.arg_sorts {
         v.visit_sort(s);
@@ -210,6 +218,9 @@ pub fn visit_predicate_decl<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a Predica
     v.visit_ident(&x.name);
     for p in &x.params {
         v.visit_generic_param(p);
+    }
+    if let Some(b) = &x.bind {
+        v.visit_sort(&b.sort);
     }
     for s in &x.arg_sorts {
         v.visit_sort(s);
@@ -284,6 +295,7 @@ pub fn visit_term_kind<'a, V: Visit<'a> + ?Sized>(v: &mut V, x: &'a TermKind) {
                 v.visit_term(t);
             }
         }
+        TermKind::Num(_) => {}
     }
 }
 

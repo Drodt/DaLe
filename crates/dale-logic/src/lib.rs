@@ -5,7 +5,8 @@
 //! are shared: building the same operator application twice yields the same [`TermIdx`].
 //!
 //! Variables are de Bruijn indices (the bound variable operator `var<S>(n)`), and binders
-//! (`all<S>{0}(Formula)`) only say which argument binds a variable.
+//! (`all<S>{S: 0}(Formula)`) only say in which arguments they bind a variable, and its sort. One
+//! binder binds one variable, possibly in several arguments.
 //!
 //! The crate knows nothing about a specific logic; only the roles of the `\top` and `\formula`
 //! sorts and the shape of the bound variable operator are fixed.
@@ -13,9 +14,6 @@
 //! Rules have a separate pattern layer ([`Rule`], [`RuleBuilder`]) that is matched against pool
 //! terms and sequents ([`match_term`], [`match_sequent`], [`match_sequent_at`]); a [`RuleIndex`]
 //! finds the rules that can match a term or a top-level formula.
-//!
-//! TODO: the dale-syn side still has to report the sort of the variable an operator binds, mark
-//! the bound variable operator, and reject duplicate numbers in `{..}` (at most one variable).
 //!
 
 mod apply;
@@ -54,5 +52,5 @@ pub use proof::{Application, Branch, Node, NodeRange, ProofError, ProofTree, Ste
 pub use sequent::{SemiChange, Semisequent, Sequent, SequentChange, SequentError, Side};
 pub use sig::{
     Binding, GenArgPat, GenKind, GenParam, MetaKind, MetaValue, OpDecl, OpFlags, OpKind, SigError,
-    Signature, SignatureBuilder, SortDecl, SortKind, SortPat,
+    Signature, SignatureBuilder, SortDecl, SortKind, SortPat, binds_arg,
 };

@@ -124,14 +124,33 @@ pub struct OpFlags {
     pub skolem: bool,
 }
 
-/// An operator that binds a variable (`all<S>{0}(Formula)`): the variable is bound in the
-/// subterm at index `arg`, and has sort `var_sort`.
+/// An operator that binds a variable (`all<S>{S: 0}(Formula)`): the variable has sort
+/// `var_sort` and is bound in the subterms at the indices `args` (strictly increasing, below 64).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Binding {
-    pub arg: u32,
-    // TODO: the theory syntax does not state the sort of the bound variable; by convention it
-    // would be the first generic parameter.
+    pub args: Vec<u32>,
     pub var_sort: SortPat,
+}
+
+impl Binding {
+    /// A variable of sort `var_sort` bound in the one subterm `arg`.
+    pub fn one(arg: u32, var_sort: SortPat) -> Self {
+        Self {
+            args: vec![arg],
+            var_sort,
+        }
+    }
+
+    /// Bit `i` is set iff argument `i` is bound.
+    pub fn mask(&self) -> u64 {
+        self.args.iter().fold(0, |m, a| m | 1 << a)
+    }
+}
+
+/// Whether argument `i` is bound according to the binding mask `mask` (see [`Binding::mask`]).
+#[inline]
+pub fn binds_arg(mask: u64, i: usize) -> bool {
+    i < 64 && mask >> i & 1 == 1
 }
 
 #[derive(Clone, Debug)]
@@ -173,7 +192,8 @@ pub enum SigError {
     /// A pattern mentions a sort declared later (or itself), an unknown parameter, a parameter
     /// of the wrong kind, or applies a sort to the wrong number or kind of arguments.
     BadSortPattern(Symbol),
-    /// A binding for an argument that does not exist.
+    /// A binding for an argument that does not exist, of no argument, of an argument twice or
+    /// out of order, or of an argument at position 64 or above.
     BindingOutOfRange(Symbol),
     /// A bound variable operator that does not have the required shape.
     BadBoundVar(Symbol),
@@ -277,7 +297,12 @@ impl SignatureBuilder {
             self.check_pat(decl.name, a, &decl.generics, n)?;
         }
         if let Some(b) = &decl.bind {
-            if b.arg as usize >= decl.args.len() {
+            let ordered = b.args.windows(2).all(|w| w[0] < w[1]);
+            let in_range = b
+                .args
+                .iter()
+                .all(|&a| (a as usize) < decl.args.len() && a < 64);
+            if b.args.is_empty() || !ordered || !in_range {
                 return Err(SigError::BindingOutOfRange(decl.name));
             }
             self.check_pat(decl.name, &b.var_sort, &decl.generics, n)?;

@@ -23,6 +23,7 @@ use crate::pool::TermPool;
 use crate::pos::{PosInOccurrence, PosInTerm, SortCheck};
 use crate::proof::{Application, Branch};
 use crate::sequent::{Sequent, SequentError, Side};
+use crate::sig::binds_arg;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ApplyError {
@@ -184,11 +185,11 @@ fn inst(
             gens,
             meta,
             args,
-            bind_arg,
+            bind_mask,
         } => {
             let mut a = Vec::with_capacity(args.len());
             for (i, &x) in args.iter().enumerate() {
-                let d = depth + (*bind_arg == Some(i as u32)) as u32;
+                let d = depth + binds_arg(*bind_mask, i) as u32;
                 a.push(inst(pool, rule, b, x, d, checks)?);
             }
             if gens.iter().any(|g| matches!(g, GenTmpl::Infer)) {

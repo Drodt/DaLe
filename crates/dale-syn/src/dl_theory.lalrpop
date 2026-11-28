@@ -23,7 +23,59 @@ pub File: File = {
 
 pub ModuleItem: ModuleItem = {
     <t:Theory> => ModuleItem::Theory(t),
+    <p:Problem> => ModuleItem::Theory(p),
     <m:Module> => ModuleItem::Module(m),
+}
+
+// `\problem { \use ...; ante ==> succ }`: the sequent to prove. A problem declares nothing; it
+// only uses theories. It is represented as a theory (`Theory::problem`) whose last item is the
+// sequent, so that `\use` and name resolution work as in theories. At most one per input.
+pub Problem: Theory = {
+    <start: @L> "\\problem" "{" <mut items:ProblemUse*> <sstart: @L> <seq:ProblemSeq> <send: @R> "}" <end: @R> => {
+        items.push(Item { id: ctx.id(), span: ctx.span(sstart, send), kind: ItemKind::Problem(seq) });
+        Theory {
+            id: ctx.id(),
+            name: Spanned::new(ctx.intern("\\problem"), ctx.span(start, end)),
+            items,
+            problem: true,
+        }
+    }
+}
+
+ProblemUse: Item = <start: @L> "\\use" <u:UseTree> ";" <end: @R> =>
+    Item { id: ctx.id(), span: ctx.span(start, end), kind: ItemKind::Use(u) };
+
+ProblemSeq: Seq = <ante:Comma<ProblemTerm>> "==>" <succ:Comma<ProblemTerm>> =>
+    Seq { id: ctx.id(), ante, succ };
+
+// Terms of problems: with explicit generic arguments (`all<int>(..)`) and number literals for
+// meta arguments (`var(0)`, a de Bruijn index).
+ProblemTerm: Term = {
+    <start: @L> <p:Path> "(" <args:Comma<ProblemTerm>> ")" <end: @R> => Term {
+        id: ctx.id(),
+        span: ctx.span(start, end),
+        kind: TermKind::Call(p, args)
+    },
+    <start: @L> <p:Path> "<" <g:Comma<GenericArg>> ">" "(" <args:Comma<ProblemTerm>> ")" <end: @R> => Term {
+        id: ctx.id(),
+        span: ctx.span(start, end),
+        kind: TermKind::ParametricCall(p, g, args)
+    },
+    <start: @L> <p:Path> "<" <g:Comma<GenericArg>> ">" <end: @R> => Term {
+        id: ctx.id(),
+        span: ctx.span(start, end),
+        kind: TermKind::ParametricPath(p, g)
+    },
+    <start: @L> <p:Path> <end: @R> => Term {
+        id: ctx.id(),
+        span: ctx.span(start, end),
+        kind: TermKind::Path(p)
+    },
+    <start: @L> <n:Int> <end: @R> => Term {
+        id: ctx.id(),
+        span: ctx.span(start, end),
+        kind: TermKind::Num(n as u64)
+    },
 }
 
 // `\module Name;` is loaded from the file `Name.theokey`; `\module Name { ... }` is inline.
@@ -46,7 +98,7 @@ pub Module: Module = {
 
 pub Theory: Theory = {
     "\\theory" <name:Ident> "{" <items:Item*> "}" => 
-    Theory {id: ctx.id(), name, items}
+    Theory {id: ctx.id(), name, items, problem: false}
 };
 
 pub Ident: Spanned<Symbol> = {
@@ -140,7 +192,7 @@ FunctionDecl: FunctionDecl = {
         modifiers,
         name,
         params: vec![],
-        where_to_bind: vec![],
+        bind: None,
         arg_sorts: vec![],
         sort
     },
@@ -149,16 +201,16 @@ FunctionDecl: FunctionDecl = {
         modifiers,
         name,
         params: vec![],
-        where_to_bind: vec![],
+        bind: None,
         arg_sorts,
         sort
     },
-    <modifiers:FunctionModifiers> <name:Ident> <where_to_bind:WhereToBind> "(" <arg_sorts:Comma<Sort>> ")" "->" <sort:Sort> ";" => FunctionDecl {
+    <modifiers:FunctionModifiers> <name:Ident> <bind:WhereToBind> "(" <arg_sorts:Comma<Sort>> ")" "->" <sort:Sort> ";" => FunctionDecl {
         id: ctx.id(),
         modifiers,
         name,
         params: vec![],
-        where_to_bind,
+        bind: Some(bind),
         arg_sorts,
         sort
     },
@@ -167,7 +219,7 @@ FunctionDecl: FunctionDecl = {
         modifiers,
         name,
         params,
-        where_to_bind: vec![],
+        bind: None,
         arg_sorts: vec![],
         sort
     },
@@ -176,26 +228,27 @@ FunctionDecl: FunctionDecl = {
         modifiers,
         name,
         params,
-        where_to_bind: vec![],
+        bind: None,
         arg_sorts,
         sort
     },
-    <modifiers:FunctionModifiers> <name:Ident> "<" <params:Comma<GenericParam>> ">" <where_to_bind:WhereToBind> "(" <arg_sorts:Comma<Sort>> ")" "->" <sort:Sort> ";" => FunctionDecl {
+    <modifiers:FunctionModifiers> <name:Ident> "<" <params:Comma<GenericParam>> ">" <bind:WhereToBind> "(" <arg_sorts:Comma<Sort>> ")" "->" <sort:Sort> ";" => FunctionDecl {
         id: ctx.id(),
         modifiers,
         name,
         params,
-        where_to_bind,
+        bind: Some(bind),
         arg_sorts,
         sort
     }
 }
 
 FunctionModifiers: FunctionModifiers = {
-    <rigid:"\\rigid"?> <unique:"\\unique"?> <skolem:"\\skolem"?> => FunctionModifiers {
+    <rigid:"\\rigid"?> <unique:"\\unique"?> <skolem:"\\skolem"?> <bound_var:"\\boundVar"?> => FunctionModifiers {
         rigid: rigid.is_some(),
         unique: unique.is_some(),
-        skolem: skolem.is_some()
+        skolem: skolem.is_some(),
+        bound_var: bound_var.is_some(),
     } 
 }
 
@@ -205,7 +258,7 @@ PredicateDecl: PredicateDecl = {
         rigid: rigid.is_some(),
         name,
         params: vec![],
-        where_to_bind: vec![],
+        bind: None,
         arg_sorts: vec![]
     },
     <rigid:"\\rigid"?> <name:Ident> "(" <arg_sorts:Comma<Sort>> ")" ";" => PredicateDecl {
@@ -213,15 +266,15 @@ PredicateDecl: PredicateDecl = {
         rigid: rigid.is_some(),
         name,
         params: vec![],
-        where_to_bind: vec![],
+        bind: None,
         arg_sorts
     },
-    <rigid:"\\rigid"?> <name:Ident> <where_to_bind:WhereToBind> "(" <arg_sorts:Comma<Sort>> ")" ";" => PredicateDecl {
+    <rigid:"\\rigid"?> <name:Ident> <bind:WhereToBind> "(" <arg_sorts:Comma<Sort>> ")" ";" => PredicateDecl {
         id: ctx.id(),
         rigid: rigid.is_some(),
         name,
         params: vec![],
-        where_to_bind,
+        bind: Some(bind),
         arg_sorts,
     },
     <rigid:"\\rigid"?> <name:Ident> "<" <params:Comma<GenericParam>> ">" ";" => PredicateDecl {
@@ -229,7 +282,7 @@ PredicateDecl: PredicateDecl = {
         rigid: rigid.is_some(),
         name,
         params,
-        where_to_bind: vec![],
+        bind: None,
         arg_sorts: vec![],
     },
     <rigid:"\\rigid"?> <name:Ident> "<" <params:Comma<GenericParam>> ">" "(" <arg_sorts:Comma<Sort>> ")" ";" => PredicateDecl {
@@ -237,20 +290,25 @@ PredicateDecl: PredicateDecl = {
         rigid: rigid.is_some(),
         name,
         params,
-        where_to_bind: vec![],
+        bind: None,
         arg_sorts
     },
-    <rigid:"\\rigid"?> <name:Ident> "<" <params:Comma<GenericParam>> ">" <where_to_bind:WhereToBind> "(" <arg_sorts:Comma<Sort>> ")" ";" => PredicateDecl {
+    <rigid:"\\rigid"?> <name:Ident> "<" <params:Comma<GenericParam>> ">" <bind:WhereToBind> "(" <arg_sorts:Comma<Sort>> ")" ";" => PredicateDecl {
         id: ctx.id(),
         rigid: rigid.is_some(),
         name,
         params,
-        where_to_bind,
+        bind: Some(bind),
         arg_sorts
     }
 }
 
-WhereToBind: Vec<u8> = "{" <nums:Comma<Int>> "}" => nums.into_iter().map(|n| n as u8).collect();
+// `{S: 0, 1}`: the operator binds a variable of sort `S` in the arguments 0 and 1.
+WhereToBind: BindSpec = <start: @L> "{" <sort:Sort> ":" <nums:Comma<Int>> "}" <end: @R> => BindSpec {
+    sort,
+    args: nums.into_iter().map(|n| n as u8).collect(),
+    span: ctx.span(start, end),
+};
 
 Sort: Sort = {
     <start: @L> <path:Path> "<" <args:Comma<GenericArg>> ">" <end: @R> => Sort {
@@ -265,6 +323,8 @@ Sort: Sort = {
     },
 }
 
+// TODO: syntax for supersorts (`nat \extends int;`); `SortDecl::extends` is always `None` so
+// far, so no subsort can be declared in a theory file.
 SortDecl: SortDecl = {
     <start: @L> <modifiers:SortModifiers> <name:Ident> "<" <params:Comma<GenericParam>> ">" ";" <end: @R> =>
     SortDecl {

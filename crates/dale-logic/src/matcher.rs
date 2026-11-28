@@ -23,6 +23,7 @@ use crate::ids::TermIdx;
 use crate::pattern::{Cond, Find, GenPat, MetaPat, PatId, PatNode, Rule, SortReq, SvId, SvKind};
 use crate::pool::{GenArg, TermPool};
 use crate::sequent::{Sequent, Side};
+use crate::sig::binds_arg;
 
 #[derive(Clone, Copy, Debug)]
 enum Undo {
@@ -132,13 +133,13 @@ fn is_lifted(pool: &TermPool, s: TermIdx, t: TermIdx, k: u32, cutoff: u32) -> bo
     if to.decl() != so.decl() || tt.op() != st.op() {
         return false;
     }
-    let bind = to.bind().map(|(b, _)| b);
+    let bind = to.bind().map_or(0, |(m, _)| m);
     pool.subs_of(s)
         .iter()
         .zip(pool.subs_of(t))
         .enumerate()
         .all(|(i, (&sa, &ta))| {
-            let c = if bind == Some(i as u32) {
+            let c = if binds_arg(bind, i) {
                 cutoff + 1
             } else {
                 cutoff
@@ -165,7 +166,7 @@ impl Ctx<'_> {
                 gens,
                 meta,
                 args,
-                bind_arg,
+                bind_mask,
             } => {
                 let od = &pool[pool.op_of(t)];
                 if od.decl() != *decl {
@@ -194,7 +195,7 @@ impl Ctx<'_> {
                 }
                 let subs = pool.subs_of(t);
                 for (i, (&a, &s)) in args.iter().zip(subs).enumerate() {
-                    let d = depth + (*bind_arg == Some(i as u32)) as u32;
+                    let d = depth + binds_arg(*bind_mask, i) as u32;
                     if !self.m(b, a, s, d) {
                         return false;
                     }

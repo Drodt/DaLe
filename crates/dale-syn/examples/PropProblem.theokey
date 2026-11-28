@@ -1,0 +1,14 @@
+// A problem file: the theories come from `RustyDL.theokey` (next to this file), the atoms from
+// a small theory of their own. Problems declare nothing; they only use theories.
+\module RustyDL;
+
+\theory Atoms {
+  \use RustyDL::Prop::*;
+  \predicates { p; q; r; }
+}
+
+\problem {
+  \use RustyDL::Prop::*;
+  \use Atoms::*;
+  p, imp(p, q), imp(q, r) ==> and(q, r)
+}

@@ -117,6 +117,19 @@ impl<'ir> Map<'ir> {
     pub fn get_sort(&self, def_id: DefId) -> SortDecl<'ir> {
         self.get_def(def_id).expect_sort_decl()
     }
+
+    /// The sequent of the `\\problem`, if the input has one.
+    pub fn problem(&self) -> Option<&'ir Seq<'ir>> {
+        self.file.items.iter().find_map(|i| match i {
+            ModuleItem::Theory(t) if t.problem => {
+                t.items.iter().find_map(|id| match self.items[id].kind {
+                    ItemKind::Problem(seq) => Some(seq),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -191,6 +204,8 @@ pub struct Theory<'ir> {
     pub id: DefId,
     pub name: Ident,
     pub items: &'ir [ItemId],
+    /// A `\\problem`: only uses and, last, an [`ItemKind::Problem`].
+    pub problem: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -226,6 +241,8 @@ pub enum ItemKind<'ir> {
     Rules(&'ir [Rule<'ir>]),
     RuleSets(&'ir [RuleSetDecl<'ir>]),
     Costs(&'ir [CostItem<'ir>]),
+    /// The sequent of a `\\problem`.
+    Problem(&'ir Seq<'ir>),
 }
 
 pub type UsePath<'ir> = Path<'ir, PerNS<Option<Res>>>;
@@ -242,7 +259,7 @@ pub struct FunctionDecl<'ir> {
     pub modifiers: FunctionModifiers,
     pub name: Ident,
     pub params: &'ir [GenericParam<'ir>],
-    pub where_to_bind: &'ir [u8],
+    pub bind: Option<BindSpec<'ir>>,
     pub arg_sort_refs: &'ir [SortRef<'ir>],
     pub sort_ref: &'ir SortRef<'ir>,
 }
@@ -252,6 +269,16 @@ pub struct FunctionModifiers {
     pub rigid: bool,
     pub unique: bool,
     pub skolem: bool,
+    /// `\\boundVar`: the bound variable operator.
+    pub bound_var: bool,
+}
+
+/// `{S: 0, 1}`: the operator binds a variable of sort `S` in the arguments 0 and 1.
+#[derive(Debug, Clone, Copy)]
+pub struct BindSpec<'ir> {
+    pub sort: &'ir SortRef<'ir>,
+    pub args: &'ir [u8],
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -260,7 +287,7 @@ pub struct OperatorDecl<'ir> {
     pub rigid: bool,
     pub name: Ident,
     pub params: &'ir [GenericParam<'ir>],
-    pub where_to_bind: &'ir [u8],
+    pub bind: Option<BindSpec<'ir>>,
     pub arg_sort_refs: &'ir [SortRef<'ir>],
     pub sort_ref: &'ir SortRef<'ir>,
 }
@@ -291,7 +318,7 @@ pub struct PredicateDecl<'ir> {
     pub rigid: bool,
     pub name: Ident,
     pub params: &'ir [GenericParam<'ir>],
-    pub where_to_bind: &'ir [u8],
+    pub bind: Option<BindSpec<'ir>>,
     pub arg_sort_refs: &'ir [SortRef<'ir>],
 }
 
@@ -334,6 +361,8 @@ pub struct Term<'ir> {
 pub enum TermKind<'ir> {
     Path(&'ir Path<'ir>, &'ir [GenericArg<'ir>]),
     Call(&'ir Path<'ir>, &'ir [GenericArg<'ir>], &'ir [Term<'ir>]),
+    /// A number literal; only in problems, as a meta argument (`var(0)`).
+    Num(u64),
 }
 
 #[derive(Debug, Clone, Copy)]

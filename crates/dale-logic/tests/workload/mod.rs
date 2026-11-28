@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use dale_logic::*;
 use dale_util::symbol::{Interner, Symbol};
 
-/// xorshift64*, as in Marsaglia/Vigna. Identical in the Java version.
+/// xorshift64*, as in Marsaglia/Vigna.
 pub struct Rng(pub u64);
 
 impl Rng {

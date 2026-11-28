@@ -109,7 +109,12 @@ impl<'ir> LowerCtx<'ir> {
         for i in &theory.items {
             self.lower_item(i);
         }
-        Theory { id, name, items }
+        Theory {
+            id,
+            name,
+            items,
+            problem: theory.problem,
+        }
     }
 
     fn lower_item_refs(&mut self, item: &raw::Item) -> SmallVec<[ItemId; 1]> {
@@ -187,6 +192,7 @@ impl<'ir> LowerCtx<'ir> {
                 self.arena
                     .alloc_from_iter(items.iter().map(|c| self.lower_cost_item(c))),
             ),
+            raw::ItemKind::Problem(seq) => ItemKind::Problem(self.arena.alloc(self.lower_seq(seq))),
         }
     }
 
@@ -335,7 +341,7 @@ impl<'ir> LowerCtx<'ir> {
         let params = self
             .arena
             .alloc_from_iter(o.params.iter().map(|p| self.lower_generic_param(p)));
-        let where_to_bind = self.arena.alloc_from_iter(o.where_to_bind.iter().copied());
+        let bind = o.bind.as_ref().map(|b| self.lower_bind_spec(b));
         let arg_sort_refs = self
             .arena
             .alloc_from_iter(o.arg_sorts.iter().map(|s| self.lower_sort_ref(s)));
@@ -345,7 +351,7 @@ impl<'ir> LowerCtx<'ir> {
             rigid: o.modifiers.rigid,
             name,
             params,
-            where_to_bind,
+            bind,
             arg_sort_refs,
             sort_ref,
         };
@@ -359,7 +365,7 @@ impl<'ir> LowerCtx<'ir> {
         let params = self
             .arena
             .alloc_from_iter(o.params.iter().map(|p| self.lower_generic_param(p)));
-        let where_to_bind = self.arena.alloc_from_iter(o.where_to_bind.iter().copied());
+        let bind = o.bind.as_ref().map(|b| self.lower_bind_spec(b));
         let arg_sort_refs = self
             .arena
             .alloc_from_iter(o.arg_sorts.iter().map(|s| self.lower_sort_ref(s)));
@@ -369,7 +375,7 @@ impl<'ir> LowerCtx<'ir> {
             modifiers: self.lower_fn_modifiers(o.modifiers),
             name,
             params,
-            where_to_bind,
+            bind,
             arg_sort_refs,
             sort_ref,
         };
@@ -383,7 +389,7 @@ impl<'ir> LowerCtx<'ir> {
         let params = self
             .arena
             .alloc_from_iter(o.params.iter().map(|p| self.lower_generic_param(p)));
-        let where_to_bind = self.arena.alloc_from_iter(o.where_to_bind.iter().copied());
+        let bind = o.bind.as_ref().map(|b| self.lower_bind_spec(b));
         let arg_sort_refs = self
             .arena
             .alloc_from_iter(o.arg_sorts.iter().map(|s| self.lower_sort_ref(s)));
@@ -392,7 +398,7 @@ impl<'ir> LowerCtx<'ir> {
             rigid: o.rigid,
             name,
             params,
-            where_to_bind,
+            bind,
             arg_sort_refs,
         };
         self.defs.insert(id, Def::PredDecl(pd));
@@ -470,6 +476,15 @@ impl<'ir> LowerCtx<'ir> {
             rigid: m.rigid,
             unique: m.unique,
             skolem: m.skolem,
+            bound_var: m.bound_var,
+        }
+    }
+
+    fn lower_bind_spec(&mut self, b: &raw::BindSpec) -> BindSpec<'ir> {
+        BindSpec {
+            sort: self.arena.alloc(self.lower_sort_ref(&b.sort)),
+            args: self.arena.alloc_from_iter(b.args.iter().copied()),
+            span: self.lower_span(&b.span),
         }
     }
 
@@ -644,6 +659,7 @@ impl<'ir> LowerCtx<'ir> {
                 self.arena
                     .alloc_from_iter(terms.iter().map(|t| self.lower_term(t))),
             ),
+            raw::TermKind::Num(n) => TermKind::Num(*n),
         };
         Term { id, span, kind }
     }

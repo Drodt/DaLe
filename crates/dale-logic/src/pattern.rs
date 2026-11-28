@@ -78,8 +78,9 @@ pub enum PatNode {
         gens: Box<[GenPat]>,
         meta: Box<[MetaPat]>,
         args: Box<[PatId]>,
-        /// The argument that is under the operator's binder, from the declaration.
-        bind_arg: Option<u32>,
+        /// The arguments that are under the operator's binder, from the declaration (see
+        /// [`binds_arg`](crate::binds_arg)).
+        bind_mask: u64,
     },
 }
 
@@ -128,7 +129,7 @@ pub enum TmplNode {
         gens: Box<[GenTmpl]>,
         meta: Box<[MetaValue]>,
         args: Box<[TmplId]>,
-        bind_arg: Option<u32>,
+        bind_mask: u64,
     },
 }
 
@@ -243,6 +244,10 @@ pub enum PatternError {
     /// `Find` is a sequent find without any formula.
     EmptyFind,
     /// The rule has no `\find`.
+    // TODO: rules without `\find` (`cut`): a `Find::None` variant (matching only checks
+    // `\assumes`, applying needs no position, the index keeps such rules in a per-goal list), and
+    // schema variables that no pattern binds (`cutFormula`, the instance of `allLeft`), filled from
+    // outside (user or strategy) and recorded in the `Application`. After the problem syntax.
     NoFind,
     UnknownTemplate(TmplId),
     /// A template mentions a schema variable that occurs in no pattern.
@@ -342,13 +347,13 @@ impl RuleBuilder {
                 self.slots = self.slots.max(i + 1);
             }
         }
-        let bind_arg = d.bind.as_ref().map(|b| b.arg);
+        let bind_mask = d.bind.as_ref().map_or(0, |b| b.mask());
         Ok(self.push(PatNode::App {
             decl,
             gens: gens.into(),
             meta: meta.into(),
             args: args.into(),
-            bind_arg,
+            bind_mask,
         }))
     }
 
@@ -421,13 +426,13 @@ impl RuleBuilder {
                 self.slots = self.slots.max(i + 1);
             }
         }
-        let bind_arg = d.bind.as_ref().map(|b| b.arg);
+        let bind_mask = d.bind.as_ref().map_or(0, |b| b.mask());
         Ok(self.push_tmpl(TmplNode::App {
             decl,
             gens: gens.into(),
             meta: meta.into(),
             args: args.into(),
-            bind_arg,
+            bind_mask,
         }))
     }
 

@@ -114,6 +114,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dale-theory"
+version = "0.1.0"
+dependencies = [
+ "dale-logic",
+ "dale-syn",
+ "dale-util",
+]
+
+[[package]]
 name = "dale-util"
 version = "0.1.0"
 

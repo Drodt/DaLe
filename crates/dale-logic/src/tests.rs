@@ -114,7 +114,7 @@ fn fx() -> Fx {
     let mut d = OpDecl::new(n.intern("all"), vec![f.clone()], f.clone());
     d.generics = vec![sg(&mut n)];
     d.bind = Some(Binding {
-        arg: 0,
+        args: vec![0],
         var_sort: SortPat::Param(0),
     });
     let all = op(&mut b, d);
@@ -469,7 +469,7 @@ fn signature_errors() {
         SortPat::simple(SortDeclId::from_u32(0)),
     );
     d.bind = Some(Binding {
-        arg: 0,
+        args: vec![0],
         var_sort: SortPat::simple(SortDeclId::from_u32(0)),
     });
     assert!(matches!(b.add_op(d), Err(SigError::BindingOutOfRange(_))));
@@ -1544,10 +1544,10 @@ mod fragments {
             }
             if tree.node(n).depth() == 2 {
                 let a = tree.sequent(n).antecedent();
-                if let Some(&t) = a.as_slice().first() {
-                    if t == firsts[0] {
-                        shown.push(pool.show_term(&f.names, t).to_string());
-                    }
+                if let Some(&t) = a.as_slice().first()
+                    && t == firsts[0]
+                {
+                    shown.push(pool.show_term(&f.names, t).to_string());
                 }
             }
         }
@@ -1635,7 +1635,7 @@ mod fragments {
 }
 
 mod applying {
-    use std::ops::ControlFlow;
+    use std::{ops::ControlFlow, slice};
 
     use super::*;
 
@@ -1701,7 +1701,7 @@ mod applying {
         // the old sequent is untouched, and the record says what happened
         assert_eq!(seq.succedent().as_slice(), &[top]);
         assert_eq!(applied.app.rule, 3);
-        assert_eq!(&*applied.app.find, &[at.clone()]);
+        assert_eq!(&*applied.app.find, slice::from_ref(&at));
         assert_eq!(applied.app.inst.svs[0], Some(q));
         assert!(first_match(&f, &rule, &seq, &pos(Side::Succedent, 0, &[])).is_none());
         let _ = qp;

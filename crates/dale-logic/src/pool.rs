@@ -21,7 +21,9 @@ use std::sync::Arc;
 use crate::arena::Arena;
 use crate::error::LogicError;
 use crate::ids::{OpDeclId, OpIdx, SortDeclId, SortIdx, TermIdx};
-use crate::sig::{GenArgPat, GenKind, GenParam, MetaValue, OpFlags, OpKind, Signature, SortPat};
+use crate::sig::{
+    GenArgPat, GenKind, GenParam, MetaValue, OpFlags, OpKind, Signature, SortPat, binds_arg,
+};
 use crate::table::{Interner, mix};
 
 /// An argument of a generic declaration.
@@ -69,7 +71,7 @@ pub struct OpData {
     arg_sorts: Box<[SortIdx]>,
     result: SortIdx,
     flags: OpFlags,
-    bind: Option<(u32, SortIdx)>,
+    bind: Option<(u64, SortIdx)>,
     var_index: Option<u64>,
 }
 
@@ -105,10 +107,17 @@ impl OpData {
     pub fn flags(&self) -> OpFlags {
         self.flags
     }
-    /// `(argument position, sort of the bound variable)` for binders.
+    /// `(mask of the bound argument positions, sort of the bound variable)` for binders; see
+    /// [`binds_arg`](crate::binds_arg).
     #[inline]
-    pub fn bind(&self) -> Option<(u32, SortIdx)> {
+    pub fn bind(&self) -> Option<(u64, SortIdx)> {
         self.bind
+    }
+
+    /// Whether the subterm at `i` is under the operator's binder.
+    #[inline]
+    pub fn binds(&self, i: usize) -> bool {
+        matches!(self.bind, Some((m, _)) if binds_arg(m, i))
     }
     /// The de Bruijn index, for bound variable operators.
     #[inline]
@@ -513,7 +522,7 @@ impl TermPool {
         }
         let result = self.inst_sort(&d.result, generics)?;
         let bind = match &d.bind {
-            Some(b) => Some((b.arg, self.inst_sort(&b.var_sort, generics)?)),
+            Some(b) => Some((b.mask(), self.inst_sort(&b.var_sort, generics)?)),
             None => None,
         };
         let var_index = match (d.kind, meta) {
@@ -569,8 +578,13 @@ impl TermPool {
             return Ok(t);
         }
         // Only new terms need the binder check: an existing one has passed it.
-        if let Some((i, var_sort)) = bind {
-            self.check_bound(args[i as usize], 0, var_sort, &mut HashSet::new())?;
+        if let Some((mask, var_sort)) = bind {
+            let mut seen = HashSet::new();
+            for (i, &a) in args.iter().enumerate() {
+                if binds_arg(mask, i) {
+                    self.check_bound(a, 0, var_sort, &mut seen)?;
+                }
+            }
         }
         Ok(self.insert_term(h, op, args))
     }
@@ -618,7 +632,7 @@ impl TermPool {
             let (l, m) = match od.bind {
                 // the variable bound here disappears, the others move one index down; the "63 and
                 // above" bit stays set
-                Some((b, _)) if b as usize == i => (
+                Some((m, _)) if binds_arg(m, i) => (
                     t.loose.saturating_sub(1),
                     (t.free_mask >> 1) | (t.free_mask & (1 << 63)),
                 ),
@@ -674,10 +688,7 @@ impl TermPool {
             return Ok(());
         }
         for (i, a) in self.args_of(term).iter().enumerate() {
-            let d = match od.bind {
-                Some((b, _)) if b as usize == i => depth + 1,
-                _ => depth,
-            };
+            let d = depth + od.binds(i) as u32;
             self.check_bound(*a, d, var_sort, seen)?;
         }
         Ok(())

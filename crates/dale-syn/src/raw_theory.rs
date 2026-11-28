@@ -54,6 +54,8 @@ pub struct Theory {
     pub id: NodeId,
     pub name: Ident,
     pub items: Vec<Item>,
+    /// A `\\problem`: only `\\use` items and, last, an [`ItemKind::Problem`].
+    pub problem: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -91,6 +93,8 @@ pub enum ItemKind {
     Rules(Rules),
     RuleSets(RuleSetDecls),
     Costs(Vec<CostItem>),
+    /// The sequent of a `\\problem`.
+    Problem(Seq),
 }
 
 #[derive(Debug, Clone)]
@@ -134,7 +138,8 @@ pub struct FunctionDecl {
     pub modifiers: FunctionModifiers,
     pub name: Ident,
     pub params: Vec<GenericParam>,
-    pub where_to_bind: Vec<u8>,
+    /// `{S: 0, 1}`: where the operator binds a variable, and its sort.
+    pub bind: Option<BindSpec>,
     pub arg_sorts: Vec<Sort>,
     pub sort: Sort,
 }
@@ -144,6 +149,17 @@ pub struct FunctionModifiers {
     pub rigid: bool,
     pub unique: bool,
     pub skolem: bool,
+    /// `\\boundVar`: the bound variable operator (`var<S>(NUMBER) -> S`).
+    pub bound_var: bool,
+}
+
+/// `{S: 0, 1}` in an operator declaration: a variable of sort `S` is bound in the arguments 0
+/// and 1.
+#[derive(Debug, Clone)]
+pub struct BindSpec {
+    pub sort: Sort,
+    pub args: Vec<u8>,
+    pub span: Span,
 }
 
 pub type SortDecls = Vec<SortDecl>;
@@ -178,7 +194,8 @@ pub struct PredicateDecl {
     pub rigid: bool,
     pub name: Ident,
     pub params: Vec<GenericParam>,
-    pub where_to_bind: Vec<u8>,
+    /// `{S: 0, 1}`: where the operator binds a variable, and its sort.
+    pub bind: Option<BindSpec>,
     pub arg_sorts: Vec<Sort>,
 }
 
@@ -228,6 +245,8 @@ pub enum TermKind {
     ParametricPath(Path, Vec<GenericArg>),
     Call(Path, Vec<Term>),
     ParametricCall(Path, Vec<GenericArg>, Vec<Term>),
+    /// A number literal; only in problems, as a meta argument (`var(0)`).
+    Num(u64),
 }
 
 type Rules = Vec<Rule>;
